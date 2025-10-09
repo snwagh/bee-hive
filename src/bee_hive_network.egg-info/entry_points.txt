@@ -1,3 +1,0 @@
-[console_scripts]
-bee-hive-cli = bee_hive_cli:cli
-flower-node = flower_node:main

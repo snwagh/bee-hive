@@ -17,79 +17,58 @@ import secrets
 
 class BaseNode:
     """Base class for all nodes in the network."""
-    
-    def __init__(self, node_id: str, nats_url: str, data_dir: str):
+
+    def __init__(self, node_id: str, nats_url: str, data_dir: str, private_key_path: str, public_key_path: str):
         self.node_id = node_id
         self.nats_url = nats_url
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # NATS connections
         self.nc: Optional[nats.NATS] = None
         self.js = None
-        
-        # Encryption keys
+
+        # Encryption keys - load from provided paths
         self.private_key = None
         self.public_key = None
         self.peer_keys: Dict[str, bytes] = {}  # node_id -> public_key
-        
+
+        # Load keys on initialization
+        self._load_keys_from_paths(private_key_path, public_key_path)
+
         # State
         self.shutdown_event = asyncio.Event()
         self.active_computations: Dict[str, Any] = {}
-        
+
         # IPC for CLI
         self.ipc_socket_path = Path(f"/tmp/flower-node-{node_id}.sock")
         self.ipc_server = None
-        
+
         print(f"[{node_id}] Initializing base node")
-    
-    def generate_keys(self):
-        """Generate RSA key pair for this node."""
-        self.private_key = rsa.generate_private_key(
-            public_exponent=65537,
-            key_size=2048,
-            backend=default_backend()
-        )
-        self.public_key = self.private_key.public_key()
-        
-        # Save keys to disk
-        private_path = self.data_dir / "private_key.pem"
-        public_path = self.data_dir / "public_key.pem"
-        
+
+    def _load_keys_from_paths(self, private_key_path: str, public_key_path: str):
+        """Load keys from specified paths (created by IdentityManager)."""
+        private_path = Path(private_key_path)
+        public_path = Path(public_key_path)
+
         if not private_path.exists():
-            with open(private_path, 'wb') as f:
-                f.write(self.private_key.private_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.PKCS8,
-                    encryption_algorithm=serialization.NoEncryption()
-                ))
-        
+            raise ValueError(f"Private key not found at {private_path}")
         if not public_path.exists():
-            with open(public_path, 'wb') as f:
-                f.write(self.public_key.public_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PublicFormat.SubjectPublicKeyInfo
-                ))
-        
-        print(f"[{self.node_id}] Keys generated/loaded")
-    
-    def load_keys(self):
-        """Load existing keys or generate new ones."""
-        private_path = self.data_dir / "private_key.pem"
-        public_path = self.data_dir / "public_key.pem"
-        
-        if private_path.exists() and public_path.exists():
-            with open(private_path, 'rb') as f:
-                self.private_key = serialization.load_pem_private_key(
-                    f.read(), password=None, backend=default_backend()
-                )
-            with open(public_path, 'rb') as f:
-                self.public_key = serialization.load_pem_public_key(
-                    f.read(), backend=default_backend()
-                )
-            print(f"[{self.node_id}] Keys loaded from disk")
-        else:
-            self.generate_keys()
+            raise ValueError(f"Public key not found at {public_path}")
+
+        # Load private key (unencrypted for node daemon use)
+        with open(private_path, 'rb') as f:
+            self.private_key = serialization.load_pem_private_key(
+                f.read(), password=None, backend=default_backend()
+            )
+
+        # Load public key
+        with open(public_path, 'rb') as f:
+            self.public_key = serialization.load_pem_public_key(
+                f.read(), backend=default_backend()
+            )
+
+        print(f"[{self.node_id}] Keys loaded from identity")
     
     def encrypt_for_peer(self, data: bytes, peer_id: str) -> Dict[str, str]:
         """Encrypt data for a specific peer using hybrid encryption."""

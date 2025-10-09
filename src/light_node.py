@@ -10,9 +10,9 @@ from base_node import BaseNode
 
 class LightNode(BaseNode):
     """Light node that executes computations."""
-    
-    def __init__(self, node_id: str, nats_url: str, data_dir: str):
-        super().__init__(node_id, nats_url, data_dir)
+
+    def __init__(self, node_id: str, nats_url: str, data_dir: str, private_key_path: str, public_key_path: str):
+        super().__init__(node_id, nats_url, data_dir, private_key_path, public_key_path)
         print(f"[{node_id}] Initialized as light node")
     
     def get_node_type(self) -> str:
@@ -199,8 +199,7 @@ class LightNode(BaseNode):
     
     async def run(self):
         """Main run loop for light node."""
-        # Setup
-        self.load_keys()
+        # Setup - keys already loaded in __init__
         await self.connect_nats()
         await self.start_ipc_server()
         

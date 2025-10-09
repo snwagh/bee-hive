@@ -1,5 +1,0 @@
-base_node
-bee_hive_cli
-flower_node
-heavy_node
-light_node

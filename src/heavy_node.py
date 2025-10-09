@@ -8,9 +8,9 @@ from light_node import LightNode
 
 class HeavyNode(LightNode):
     """Heavy node that coordinates and can also execute computations."""
-    
-    def __init__(self, node_id: str, nats_url: str, data_dir: str):
-        super().__init__(node_id, nats_url, data_dir)
+
+    def __init__(self, node_id: str, nats_url: str, data_dir: str, private_key_path: str, public_key_path: str):
+        super().__init__(node_id, nats_url, data_dir, private_key_path, public_key_path)
         self.aggregation_buffer: Dict[str, List] = {}  # comp_id -> list of results
         print(f"[{node_id}] Initialized as heavy node (can also act as light)")
     
@@ -196,8 +196,7 @@ class HeavyNode(LightNode):
     
     async def run(self):
         """Main run loop for heavy node."""
-        # Setup
-        self.load_keys()
+        # Setup - keys already loaded in __init__
         await self.connect_nats()
         await self.start_ipc_server()
         

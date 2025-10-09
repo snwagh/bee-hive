@@ -13,5 +13,4 @@ dependencies = [
 ]
 
 [project.scripts]
-flower-node = "flower_node:main"
-bee-hive-cli = "bee_hive_cli:cli"
+bee-hive = "bee_hive_cli:cli"
