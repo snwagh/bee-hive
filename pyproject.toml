@@ -1,0 +1,17 @@
+[project]
+name = "bee-hive-network"
+version = "0.1.0"
+description = "Decentralized LLM computation network with E2E encryption"
+requires-python = ">=3.9"
+dependencies = [
+    "nats-py>=2.6.0",
+    "click>=8.1.0",
+    "msgpack>=1.0.0",
+    "pyyaml>=6.0",
+    "aiofiles>=23.0.0",
+    "cryptography>=41.0.0",
+]
+
+[project.scripts]
+flower-node = "flower_node:main"
+bee-hive-cli = "bee_hive_cli:cli"
