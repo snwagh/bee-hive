@@ -332,6 +332,37 @@ def submit(query, proposer, aggregators, targets, deadline):
 
 @cli.command()
 @click.argument('alias')
+def logs(alias):
+    """View logs for a running node (tail -f)."""
+
+    # Check if identity exists
+    identity_mgr = IdentityManager()
+    if not identity_mgr.identity_exists(alias):
+        click.echo(f"❌ Identity '{alias}' not found", err=True)
+        sys.exit(1)
+
+    # Check if log file exists
+    log_file = Path(f"./data/{alias}/node.log")
+    if not log_file.exists():
+        click.echo(f"❌ Log file not found: {log_file}", err=True)
+        click.echo(f"   Node may not have been started yet", err=True)
+        sys.exit(1)
+
+    click.echo(f"📜 Viewing logs for node '{alias}' (Ctrl+C to exit)")
+    click.echo(f"   Log file: {log_file}\n")
+
+    try:
+        # Run tail -f on the log file
+        subprocess.run(['tail', '-f', str(log_file)])
+    except KeyboardInterrupt:
+        click.echo("\n\n👋 Log viewing stopped")
+    except FileNotFoundError:
+        click.echo("\n❌ 'tail' command not found on this system", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument('alias')
 def deregister(alias):
     """Deregister a node from the network and remove all data."""
 

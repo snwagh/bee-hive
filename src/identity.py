@@ -51,8 +51,9 @@ class IdentityManager:
         if not self.validate_alias(alias):
             raise ValueError("Alias must be alphanumeric (underscores and hyphens allowed)")
 
-        if not self.validate_email(email):
-            raise ValueError("Invalid email format")
+        # TODO: Uncomment this
+        # if not self.validate_email(email):
+        #     raise ValueError("Invalid email format")
 
         # if len(password) < 8:
         #     raise ValueError("Password must be at least 8 characters")

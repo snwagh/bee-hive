@@ -5,6 +5,8 @@ from typing import Dict, List
 import msgpack
 from datetime import datetime
 from light_node import LightNode
+from loguru import logger
+from db import MOD
 
 class HeavyNode(LightNode):
     """Heavy node that coordinates and can also execute computations."""
@@ -12,176 +14,131 @@ class HeavyNode(LightNode):
     def __init__(self, node_id: str, nats_url: str, data_dir: str, private_key_path: str, public_key_path: str):
         super().__init__(node_id, nats_url, data_dir, private_key_path, public_key_path)
         self.aggregation_buffer: Dict[str, List] = {}  # comp_id -> list of results
-        print(f"[{node_id}] Initialized as heavy node (can also act as light)")
+        logger.info(f"[{node_id}] Initialized as heavy node (can also act as light)")
     
     def get_node_type(self) -> str:
         return "heavy"
     
     async def _handle_proposal(self, msg):
-        """Handle computation proposal from any node."""
+        """Handle computation proposal from proposer node."""
         try:
             encrypted_msg = msgpack.unpackb(msg.data)
             decrypted_data = self.decrypt_from_peer(encrypted_msg)
             comp = msgpack.unpackb(decrypted_data)
-            
-            print(f"[{self.node_id}] Received proposal for computation {comp['id']}")
-            
-            # Store computation
-            self.active_computations[comp['id']] = comp
-            
-            # Get list of all heavy nodes (including self)
-            heavy_nodes = await self._discover_heavy_nodes()
-            
-            # Broadcast to entire network
-            broadcast_msg = {
-                "computation": comp,
-                "heavy_nodes": heavy_nodes  # Tell light nodes where to send shares
-            }
-            
-            # Encrypt for broadcast (using a symmetric key for efficiency)
-            # In production, use a group key or separate encryption per node
-            for peer_id in self.peer_keys:
-                encrypted_broadcast = self.encrypt_for_peer(
-                    msgpack.packb(broadcast_msg),
-                    peer_id
-                )
-                await self.nc.publish("comp.broadcast", msgpack.packb(encrypted_broadcast))
-            
-            print(f"[{self.node_id}] Broadcasted computation to network")
-            
-            # As a heavy node, we also execute if we have light capabilities
-            # This is where heavy inherits from light
-            await self._execute_as_light(comp, heavy_nodes)
-            
-            # Start collection task
+
+            comp_id = comp['id']
+            proposer = comp['proposer']
+            query = comp['query']
+            aggregators = comp['aggregators']
+            targets = comp['targets']
+
+            logger.info(f"[{self.node_id}] Received proposal for computation {comp_id}")
+
+            # Store computation in aggregator table
+            self.db.insert_aggregator(comp_id, proposer, query, targets)
+            self.active_computations[comp_id] = comp
+
+            # Only the first aggregator broadcasts to targets
+            is_first_aggregator = (aggregators[0] == self.node_id)
+
+            if is_first_aggregator:
+                logger.info(f"[{self.node_id}] I am the first aggregator, broadcasting to targets")
+
+                broadcast_msg = {
+                    "computation": comp,
+                    "heavy_nodes": aggregators  # Tell targets where to send shares
+                }
+
+                # Send to each target on their specific channel
+                for target_id in targets:
+                    if target_id in self.peer_keys:
+                        encrypted_broadcast = self.encrypt_for_peer(
+                            msgpack.packb(broadcast_msg),
+                            target_id
+                        )
+                        # Use target-specific channel instead of broadcast channel
+                        await self.nc.publish(f"comp.broadcast.{target_id}", msgpack.packb(encrypted_broadcast))
+                        logger.info(f"[{self.node_id}] Sent computation to target {target_id}")
+                    else:
+                        logger.warning(f"[{self.node_id}] No public key for target {target_id}")
+
+            # Start collection and aggregation task
             asyncio.create_task(self._collect_and_aggregate(comp))
-        
+
         except Exception as e:
-            print(f"[{self.node_id}] Error handling proposal: {e}")
-    
-    async def _execute_as_light(self, comp: dict, heavy_nodes: List[str]):
-        """Execute computation as a light node (since heavy inherits from light)."""
-        # Execute computation using parent class method
-        result = await self.execute_computation(comp['query'])
-        
-        # Generate secret shares
-        shares = self.generate_secret_shares(100)
-        
-        # Send shares to heavy nodes (including self)
-        for i, heavy_id in enumerate(heavy_nodes[:2]):
-            share_value = shares[i] if i < len(shares) else 0
-            
-            response = {
-                "computation_id": comp['id'],
-                "node_id": self.node_id,
-                "result": result,
-                "share": share_value,
-                "share_index": i,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            
-            if heavy_id == self.node_id:
-                # Add to our own buffer directly
-                if comp['id'] not in self.aggregation_buffer:
-                    self.aggregation_buffer[comp['id']] = []
-                self.aggregation_buffer[comp['id']].append(response)
-            else:
-                # Send to other heavy node
-                if heavy_id in self.peer_keys:
-                    encrypted = self.encrypt_for_peer(
-                        msgpack.packb(response),
-                        heavy_id
-                    )
-                    await self.nc.publish(
-                        f"comp.result.{heavy_id}",
-                        msgpack.packb(encrypted)
-                    )
-            
-            print(f"[{self.node_id}] Sent share {share_value} to {heavy_id} (as light)")
+            import traceback
+            logger.error(f"[{self.node_id}] Error handling proposal: {e}")
+            logger.debug(f"[{self.node_id}] Traceback: {traceback.format_exc()}")
     
     async def _handle_result(self, msg):
-        """Handle results from light nodes."""
+        """Handle share results from target nodes."""
         try:
             encrypted_msg = msgpack.unpackb(msg.data)
             decrypted_data = self.decrypt_from_peer(encrypted_msg)
             result = msgpack.unpackb(decrypted_data)
-            
+
             comp_id = result['computation_id']
-            
-            # Add to aggregation buffer
+            node_id = result['node_id']
+            share_value = result['share']
+
+            logger.info(f"[{self.node_id}] Received share {share_value} from {node_id} for computation {comp_id}")
+
+            # Add share to database
+            self.db.add_share(comp_id, node_id, share_value)
+
+            # Also add to buffer for tracking
             if comp_id not in self.aggregation_buffer:
                 self.aggregation_buffer[comp_id] = []
-            
             self.aggregation_buffer[comp_id].append(result)
-            
-            print(f"[{self.node_id}] Received share {result['share']} from {result['node_id']}")
-        
+
         except Exception as e:
-            print(f"[{self.node_id}] Error handling result: {e}")
+            logger.error(f"[{self.node_id}] Error handling result: {e}")
     
     async def _collect_and_aggregate(self, comp: dict):
-        """Collect results and aggregate shares."""
+        """Collect shares and aggregate (mod 2**32)."""
         comp_id = comp['id']
         deadline = comp.get('deadline', 30)
-        
+        proposer_id = comp['proposer']
+
+        logger.info(f"[{self.node_id}] Waiting {deadline}s for shares for computation {comp_id}")
+
         # Wait for deadline
         await asyncio.sleep(deadline)
-        
-        # Aggregate shares
-        if comp_id in self.aggregation_buffer:
-            results = self.aggregation_buffer[comp_id]
-            
-            # Sum all shares (MPC-style aggregation)
-            total_shares = sum(r['share'] for r in results)
-            
-            print(f"[{self.node_id}] Aggregated {len(results)} results")
-            print(f"[{self.node_id}] Total share value: {total_shares}")
-            
-            # Send aggregated result back to proposer
-            aggregated = {
-                "computation_id": comp_id,
-                "aggregated_value": total_shares,
-                "num_results": len(results),
-                "aggregator": self.node_id,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            
-            proposer_id = comp['proposer']
-            if proposer_id in self.peer_keys:
-                encrypted = self.encrypt_for_peer(
-                    msgpack.packb(aggregated),
-                    proposer_id
-                )
-                await self.nc.publish(
-                    f"comp.final.{proposer_id}",
-                    msgpack.packb(encrypted)
-                )
-                print(f"[{self.node_id}] Sent aggregated result to {proposer_id}")
-            
-            # Clean up buffer
-            del self.aggregation_buffer[comp_id]
-    
-    async def _discover_heavy_nodes(self) -> List[str]:
-        """Discover all heavy nodes in the network."""
-        try:
-            response = await self.nc.request(
-                "node.discover.heavy",
-                b"",
-                timeout=2.0
+
+        # Aggregate shares from database (mod 2**32)
+        aggregated_value = self.db.aggregate_shares(comp_id)
+
+        num_shares = len(self.aggregation_buffer.get(comp_id, []))
+        logger.info(f"[{self.node_id}] Aggregated {num_shares} shares for {comp_id}: {aggregated_value}")
+
+        # Send aggregated result back to proposer
+        aggregated = {
+            "computation_id": comp_id,
+            "aggregated_value": aggregated_value,
+            "num_results": num_shares,
+            "aggregator": self.node_id,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+        if proposer_id in self.peer_keys:
+            encrypted = self.encrypt_for_peer(
+                msgpack.packb(aggregated),
+                proposer_id
             )
-            if response.data:
-                nodes = msgpack.unpackb(response.data)
-                heavy_ids = [n['node_id'] for n in nodes if n.get('type') == 'heavy']
-                
-                # Add self if not in list
-                if self.node_id not in heavy_ids:
-                    heavy_ids.append(self.node_id)
-                
-                return heavy_ids[:2]  # Limit to 2 heavy nodes for MPC
-        except:
-            pass
-        
-        return [self.node_id]  # Default to self
+            await self.nc.publish(
+                f"comp.final.{proposer_id}",
+                msgpack.packb(encrypted)
+            )
+            logger.info(f"[{self.node_id}] Sent aggregated result {aggregated_value} to {proposer_id}")
+
+            # Mark as sent in database
+            self.db.mark_aggregator_sent(comp_id)
+        else:
+            logger.warning(f"[{self.node_id}] No public key for proposer {proposer_id}")
+
+        # Clean up buffer
+        if comp_id in self.aggregation_buffer:
+            del self.aggregation_buffer[comp_id]
     
     async def _handle_discover(self, msg):
         """Override to respond as heavy node."""
@@ -199,23 +156,26 @@ class HeavyNode(LightNode):
         # Setup - keys already loaded in __init__
         await self.connect_nats()
         await self.start_ipc_server()
-        
-        # Heavy node subscriptions
-        await self.nc.subscribe("comp.proposal", cb=self._handle_proposal)
+
+        # Start periodic peer refresh
+        asyncio.create_task(self._refresh_peers_periodically())
+
+        # Heavy node subscriptions - use node-specific channel
+        await self.nc.subscribe(f"comp.proposal.{self.node_id}", cb=self._handle_proposal)
         await self.nc.subscribe(f"comp.result.{self.node_id}", cb=self._handle_result)
-        
-        # Light node subscriptions (inherited functionality)
-        await self.nc.subscribe("comp.broadcast", cb=self._handle_execute_broadcast)
+
+        # Light node subscriptions (inherited functionality) - use node-specific channel
+        await self.nc.subscribe(f"comp.broadcast.{self.node_id}", cb=self._handle_execute_broadcast)
         await self.nc.subscribe(f"comp.final.{self.node_id}", cb=self._handle_final_result)
-        
+
         # Discovery
         await self.nc.subscribe("node.discover.heavy", cb=self._handle_discover)
         await self.nc.subscribe("node.discover.light", cb=self._handle_discover)  # Can respond to both
-        
+
         # Signal handling
         loop = asyncio.get_event_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, lambda: asyncio.create_task(self.shutdown()))
-        
-        print(f"[{self.node_id}] Heavy node ready (can also act as light)!")
+
+        logger.info(f"[{self.node_id}] Heavy node ready (can also act as light)!")
         await self.shutdown_event.wait()
