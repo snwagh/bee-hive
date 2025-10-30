@@ -15,6 +15,7 @@ import base64
 import secrets
 from loguru import logger
 from db import ComputationDB
+from identity import IdentityManager
 
 class BaseNode:
     """Base class for all nodes in the network."""
@@ -41,6 +42,10 @@ class BaseNode:
         self.db = ComputationDB(db_path)
         logger.info(f"[{node_id}] Database initialized at {db_path}")
 
+        # Identity manager for this node (manages both local and peer identities)
+        self.identity_mgr = IdentityManager(alias=node_id)
+        logger.info(f"[{node_id}] Identity manager initialized")
+
         # NATS connections
         self.nc: Optional[nats.NATS] = None
         self.js = None
@@ -52,6 +57,9 @@ class BaseNode:
 
         # Load keys on initialization
         self._load_keys_from_paths(private_key_path, public_key_path)
+
+        # Load peer keys from persistent storage
+        self._load_peer_keys_from_identities()
 
         # State
         self.shutdown_event = asyncio.Event()
@@ -84,7 +92,25 @@ class BaseNode:
             )
 
         logger.info(f"[{self.node_id}] Keys loaded from identity")
-    
+
+    def _load_peer_keys_from_identities(self):
+        """Load peer public keys from persistent identities.json on startup."""
+        all_identities = self.identity_mgr.get_all_identities()
+
+        for alias, identity in all_identities.items():
+            if identity.get("type") == "peer":
+                # Load peer public key
+                public_key_pem = base64.b64decode(identity["public_key"])
+                self.peer_keys[alias] = public_key_pem
+                logger.info(f"[{self.node_id}] Loaded peer {alias} ({identity.get('node_type')}) from persistent storage")
+            elif identity.get("type") == "local":
+                # Also load own key for self-communication (when node is both aggregator and target)
+                public_key_pem = base64.b64decode(identity["public_key"])
+                self.peer_keys[self.node_id] = public_key_pem
+                logger.debug(f"[{self.node_id}] Loaded own public key for self-communication")
+
+        logger.info(f"[{self.node_id}] Loaded {len(self.peer_keys)} total keys from persistent storage")
+
     def encrypt_for_peer(self, data: bytes, peer_id: str) -> Dict[str, str]:
         """Encrypt data for a specific peer using hybrid encryption."""
         if peer_id not in self.peer_keys:
@@ -131,35 +157,44 @@ class BaseNode:
     
     def decrypt_from_peer(self, encrypted_msg: Dict[str, str]) -> bytes:
         """Decrypt data from a peer."""
-        # Decode from base64
-        encrypted_data = base64.b64decode(encrypted_msg["encrypted_data"])
-        encrypted_key = base64.b64decode(encrypted_msg["encrypted_key"])
-        iv = base64.b64decode(encrypted_msg["iv"])
-        
-        # Decrypt AES key with our RSA private key
-        aes_key = self.private_key.decrypt(
-            encrypted_key,
-            padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None
+        sender = encrypted_msg.get("sender", "unknown")
+
+        try:
+            # Decode from base64
+            encrypted_data = base64.b64decode(encrypted_msg["encrypted_data"])
+            encrypted_key = base64.b64decode(encrypted_msg["encrypted_key"])
+            iv = base64.b64decode(encrypted_msg["iv"])
+
+            # Decrypt AES key with our RSA private key
+            aes_key = self.private_key.decrypt(
+                encrypted_key,
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
             )
-        )
-        
-        # Decrypt data with AES
-        cipher = Cipher(
-            algorithms.AES(aes_key),
-            modes.CBC(iv),
-            backend=default_backend()
-        )
-        decryptor = cipher.decryptor()
-        padded_data = decryptor.update(encrypted_data) + decryptor.finalize()
-        
-        # Remove padding
-        pad_len = padded_data[-1]
-        data = padded_data[:-pad_len]
-        
-        return data
+
+            # Decrypt data with AES
+            cipher = Cipher(
+                algorithms.AES(aes_key),
+                modes.CBC(iv),
+                backend=default_backend()
+            )
+            decryptor = cipher.decryptor()
+            padded_data = decryptor.update(encrypted_data) + decryptor.finalize()
+
+            # Remove padding
+            pad_len = padded_data[-1]
+            data = padded_data[:-pad_len]
+
+            return data
+        except Exception as e:
+            logger.error(f"[{self.node_id}] ❌ Decryption failed for message from {sender}")
+            logger.error(f"[{self.node_id}]    Error type: {type(e).__name__}: {e}")
+            logger.error(f"[{self.node_id}]    This usually means sender used wrong/old public key for encryption")
+            logger.error(f"[{self.node_id}]    Known peers: {list(self.peer_keys.keys())}")
+            raise ValueError("Decryption failed") from e
     
     async def connect_nats(self):
         """Connect to NATS server."""
@@ -206,15 +241,37 @@ class BaseNode:
         logger.info(f"[{self.node_id}] Registered with public key")
     
     async def _handle_peer_registration(self, msg):
-        """Store peer public keys."""
+        """Store peer public keys (both in memory and persistent storage)."""
         try:
             data = msgpack.unpackb(msg.data)
             peer_id = data["node_id"]
+            node_type = data.get("node_type", "unknown")
 
             if peer_id != self.node_id:
                 public_key_pem = base64.b64decode(data["public_key"])
+
+                # Check if this is a key update (peer re-registered with new keys)
+                key_updated = False
+                if peer_id in self.peer_keys:
+                    old_key = self.peer_keys[peer_id]
+                    if old_key != public_key_pem:
+                        logger.warning(f"[{self.node_id}] ⚠️  Peer {peer_id} has NEW public key! (key rotated)")
+                        key_updated = True
+
+                # Store in memory (for immediate use)
                 self.peer_keys[peer_id] = public_key_pem
-                logger.info(f"[{self.node_id}] Stored public key for {peer_id}")
+
+                # Store persistently (survives restarts)
+                self.identity_mgr.add_peer_identity(
+                    peer_alias=peer_id,
+                    public_key_pem=public_key_pem,
+                    node_type=node_type
+                )
+
+                if key_updated:
+                    logger.info(f"[{self.node_id}] UPDATED peer {peer_id} ({node_type}) with new public key")
+                else:
+                    logger.info(f"[{self.node_id}] Stored peer {peer_id} ({node_type}) in memory and persistent storage")
         except Exception as e:
             logger.error(f"[{self.node_id}] Error handling registration: {e}")
 

@@ -19,10 +19,11 @@ from identity import IdentityManager
 class NodeManager:
     """Manages node processes."""
 
-    def __init__(self, data_dir: str = "./data"):
-        self.data_dir = Path(data_dir)
-        self.data_dir.mkdir(exist_ok=True)
-        self.pids_file = Path.home() / ".bee-hive" / "node_pids.json"
+    def __init__(self):
+        # Data is now stored in ~/.bee-hive/{alias}/data/
+        self.base_dir = Path.home() / ".bee-hive"
+        self.base_dir.mkdir(exist_ok=True)
+        self.pids_file = self.base_dir / "node_pids.json"
 
     def is_running(self, alias: str) -> bool:
         """Check if node is running."""
@@ -44,12 +45,12 @@ class NodeManager:
         """Start a node process in the background."""
         alias = identity["alias"]
         node_type = identity["node_type"]
-        node_data_dir = self.data_dir / alias
-        node_data_dir.mkdir(exist_ok=True)
+        # Data directory is now ~/.bee-hive/{alias}/data/
+        node_data_dir = self.base_dir / alias / "data"
+        node_data_dir.mkdir(parents=True, exist_ok=True)
 
-        # Get key paths from identity
-        identity_mgr = IdentityManager()
-        private_key_path, public_key_path = identity_mgr.get_key_paths(alias)
+        # Get key paths using static method
+        private_key_path, public_key_path = IdentityManager.get_key_paths_for_alias(alias)
 
         click.echo(f"🚀 Starting {node_type} node '{alias}'...")
 
@@ -163,7 +164,8 @@ asyncio.run(node.run())
 
     def remove_node_data(self, alias: str):
         """Remove computation data for a node."""
-        node_data_dir = self.data_dir / alias
+        # Data directory is now ~/.bee-hive/{alias}/data/
+        node_data_dir = self.base_dir / alias / "data"
         if node_data_dir.exists():
             import shutil
             shutil.rmtree(node_data_dir)
@@ -215,17 +217,15 @@ def register(nats_url):
         click.echo("❌ Passwords do not match", err=True)
         sys.exit(1)
 
-    # Create identity
-    identity_mgr = IdentityManager()
-
     try:
-        # Check if already exists
-        if identity_mgr.identity_exists(alias):
-            click.echo(f"\n⚠️  Identity '{alias}' already exists.")
+        # Check if node already exists
+        if IdentityManager.node_exists(alias):
+            click.echo(f"\n⚠️  Node '{alias}' already exists.")
 
             # Try to verify with provided password
             try:
-                identity = identity_mgr.verify_identity(alias, password)
+                identity_mgr = IdentityManager(alias=alias)
+                identity = identity_mgr.verify_identity(password)
                 click.echo(f"✅ Verified identity: @{alias}")
 
                 # Check if node is running
@@ -243,7 +243,8 @@ def register(nats_url):
 
             return
 
-        # Create new identity
+        # Create new identity (no alias in constructor for creation)
+        identity_mgr = IdentityManager()
         identity = identity_mgr.create_identity(alias, email, password, node_type)
 
         # Start node
@@ -261,7 +262,7 @@ def register(nats_url):
         click.echo("╟───────────────────────────────────────────────────╢")
         click.echo("║ Next steps:                                       ║")
         click.echo("║  • Use 'bee-hive submit' to create computations   ║")
-        click.echo("║  • View results in ./data/<alias>/                ║")
+        click.echo("║  • View results in ~/.bee-hive/<alias>/data/      ║")
         click.echo("╚═══════════════════════════════════════════════════╝")
 
     except ValueError as e:
@@ -281,11 +282,10 @@ def register(nats_url):
 def submit(query, proposer, aggregators, targets, deadline):
     """Submit a computation to the network."""
 
-    # Verify proposer identity exists
-    identity_mgr = IdentityManager()
-    if not identity_mgr.identity_exists(proposer):
-        click.echo(f"❌ Proposer identity '{proposer}' not found on this machine", err=True)
-        click.echo(f"   Run 'bee-hive register' first to create identity", err=True)
+    # Verify proposer node exists
+    if not IdentityManager.node_exists(proposer):
+        click.echo(f"❌ Proposer node '{proposer}' not found on this machine", err=True)
+        click.echo(f"   Run 'bee-hive register' first to create the node", err=True)
         sys.exit(1)
 
     # Check if node is running
@@ -323,7 +323,7 @@ def submit(query, proposer, aggregators, targets, deadline):
         if 'heavy_nodes' in result:
             click.echo(f"   Aggregators: {', '.join(result['heavy_nodes'])}")
         click.echo(f"   Deadline: {deadline}s")
-        click.echo(f"\n💡 Results will be saved to: ./data/{proposer}/")
+        click.echo(f"\n💡 Results will be saved to: ~/.bee-hive/{proposer}/data/")
 
     except Exception as e:
         click.echo(f"❌ Failed to submit: {e}", err=True)
@@ -332,17 +332,97 @@ def submit(query, proposer, aggregators, targets, deadline):
 
 @cli.command()
 @click.argument('alias')
+def peers(alias):
+    """Show known peers for a node (useful for debugging)."""
+
+    # Check if node exists
+    if not IdentityManager.node_exists(alias):
+        click.echo(f"❌ Node '{alias}' not found", err=True)
+        sys.exit(1)
+
+    identity_mgr = IdentityManager(alias=alias)
+
+    # Get local identity
+    local_identity = identity_mgr.get_local_identity()
+    click.echo(f"\n╔═══════════════════════════════════════════════════╗")
+    click.echo(f"║         Peer Information for @{alias:<24} ║")
+    click.echo(f"╚═══════════════════════════════════════════════════╝\n")
+
+    click.echo(f"Local Identity:")
+    click.echo(f"  Alias: {local_identity['alias']}")
+    click.echo(f"  Type: {local_identity['node_type']}")
+    click.echo(f"  Public Key (first 60 chars): {local_identity['public_key'][:60]}...")
+
+    # Get peer identities
+    peers = identity_mgr.list_peer_identities()
+
+    if not peers:
+        click.echo(f"\n⚠️  No peers discovered yet")
+        click.echo(f"   Wait for periodic peer refresh (happens every 30 seconds)")
+    else:
+        click.echo(f"\nKnown Peers ({len(peers)}):")
+        for peer_alias, peer_info in peers.items():
+            import datetime
+            last_seen = datetime.datetime.fromtimestamp(peer_info.get('last_seen', 0))
+            click.echo(f"\n  • {peer_alias} ({peer_info.get('node_type', 'unknown')})")
+            click.echo(f"    First seen: {datetime.datetime.fromtimestamp(peer_info.get('first_seen', 0)).strftime('%Y-%m-%d %H:%M:%S')}")
+            click.echo(f"    Last seen: {last_seen.strftime('%Y-%m-%d %H:%M:%S')}")
+            click.echo(f"    Public key (first 60 chars): {peer_info['public_key'][:60]}...")
+
+
+@cli.command()
+def list():
+    """List all registered nodes on this machine."""
+
+    nodes = IdentityManager.list_local_nodes()
+
+    if not nodes:
+        click.echo("No nodes registered on this machine")
+        click.echo("\n💡 Use 'bee-hive register' to create a new node")
+        return
+
+    click.echo("╔═══════════════════════════════════════════════════╗")
+    click.echo("║         Registered Nodes on This Machine         ║")
+    click.echo("╚═══════════════════════════════════════════════════╝\n")
+
+    node_mgr = NodeManager()
+
+    for node in nodes:
+        alias = node["alias"]
+        node_type = node["node_type"]
+        running = node_mgr.is_running(alias)
+        status = "🟢 running" if running else "⚫ stopped"
+
+        click.echo(f"  {status}  @{alias}")
+        click.echo(f"           Type: {node_type}")
+        click.echo(f"           Email: {node.get('email', 'N/A')}")
+
+        # Show peer count if running
+        if running:
+            try:
+                identity_mgr = IdentityManager(alias=alias)
+                peer_count = len(identity_mgr.list_peer_identities())
+                click.echo(f"           Known peers: {peer_count}")
+            except:
+                pass
+
+        click.echo()
+
+    click.echo(f"Total: {len(nodes)} node(s)")
+
+
+@cli.command()
+@click.argument('alias')
 def logs(alias):
     """View logs for a running node (tail -f)."""
 
-    # Check if identity exists
-    identity_mgr = IdentityManager()
-    if not identity_mgr.identity_exists(alias):
-        click.echo(f"❌ Identity '{alias}' not found", err=True)
+    # Check if node exists
+    if not IdentityManager.node_exists(alias):
+        click.echo(f"❌ Node '{alias}' not found", err=True)
         sys.exit(1)
 
     # Check if log file exists
-    log_file = Path(f"./data/{alias}/node.log")
+    log_file = Path.home() / ".bee-hive" / alias / "data" / "node.log"
     if not log_file.exists():
         click.echo(f"❌ Log file not found: {log_file}", err=True)
         click.echo(f"   Node may not have been started yet", err=True)
@@ -370,10 +450,9 @@ def deregister(alias):
     click.echo("║         Bee-Hive Network Deregistration           ║")
     click.echo("╚═══════════════════════════════════════════════════╝\n")
 
-    # Check if identity exists
-    identity_mgr = IdentityManager()
-    if not identity_mgr.identity_exists(alias):
-        click.echo(f"❌ Identity '{alias}' not found", err=True)
+    # Check if node exists
+    if not IdentityManager.node_exists(alias):
+        click.echo(f"❌ Node '{alias}' not found", err=True)
         sys.exit(1)
 
     # Get password for verification
@@ -381,15 +460,16 @@ def deregister(alias):
 
     # Verify password BEFORE showing destructive operation warnings
     try:
-        identity_mgr.verify_identity(alias, password)
+        identity_mgr = IdentityManager(alias=alias)
+        identity_mgr.verify_identity(password)
     except ValueError as e:
         click.echo(f"\n❌ {e}", err=True)
         sys.exit(1)
 
     # Show what will be deleted
     click.echo(f"\n⚠️  WARNING: This will permanently delete:")
-    click.echo(f"   • Identity and cryptographic keys (~/.bee-hive/{alias}/)")
-    click.echo(f"   • Computation data (./data/{alias}/)")
+    click.echo(f"   • Identity and cryptographic keys (~/.bee-hive/{alias}/keys/)")
+    click.echo(f"   • Computation data (~/.bee-hive/{alias}/data/)")
     click.echo(f"   • Stop running node process")
 
     if not click.confirm("\nAre you sure you want to continue?", default=False):
@@ -409,13 +489,13 @@ def deregister(alias):
         else:
             click.echo(f"\nℹ️  Node '{alias}' is not running")
 
-        # Remove computation data
-        click.echo(f"🗑️  Removing computation data...")
-        node_mgr.remove_node_data(alias)
-
-        # Delete identity and keys (password already verified above)
-        click.echo(f"🗑️  Removing identity and keys...")
-        identity_mgr.delete_identity(alias, password)
+        # Remove entire node directory (includes keys, data, identities.json)
+        click.echo(f"🗑️  Removing node directory...")
+        import shutil
+        node_dir = Path.home() / ".bee-hive" / alias
+        if node_dir.exists():
+            shutil.rmtree(node_dir)
+            click.echo(f"✅ Removed {node_dir}")
 
         click.echo()
         click.echo("╔═══════════════════════════════════════════════════╗")
