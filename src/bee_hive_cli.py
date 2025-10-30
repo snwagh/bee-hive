@@ -218,9 +218,9 @@ def register(nats_url):
         sys.exit(1)
 
     try:
-        # Check if node already exists
+        # Check if node already exists locally
         if IdentityManager.node_exists(alias):
-            click.echo(f"\n⚠️  Node '{alias}' already exists.")
+            click.echo(f"\n⚠️  Node '{alias}' already exists on this machine.")
 
             # Try to verify with provided password
             try:
@@ -242,6 +242,27 @@ def register(nats_url):
                 sys.exit(1)
 
             return
+
+        # Check if alias is already taken on the network
+        click.echo(f"\n🔍 Checking if '@{alias}' is available on the network...")
+
+        try:
+            alias_available = asyncio.run(check_alias_available_on_network(alias, nats_url))
+        except RuntimeError as e:
+            click.echo(f"\n❌ Registration failed: Cannot connect to network", err=True)
+            click.echo(f"   {e}", err=True)
+            click.echo(f"\n💡 Make sure the NATS server is running:", err=True)
+            click.echo(f"   • Local: docker-compose up -d", err=True)
+            click.echo(f"   • Remote: Check connection to {nats_url}", err=True)
+            sys.exit(1)
+
+        if not alias_available:
+            click.echo(f"\n❌ Registration failed: Alias '@{alias}' is already taken on the network", err=True)
+            click.echo(f"   Each node must have a unique alias across the entire network", err=True)
+            click.echo(f"   Please choose a different alias", err=True)
+            sys.exit(1)
+
+        click.echo(f"✅ Alias '@{alias}' is available!")
 
         # Create new identity (no alias in constructor for creation)
         identity_mgr = IdentityManager()
@@ -511,6 +532,54 @@ def deregister(alias):
     except Exception as e:
         click.echo(f"\n❌ Error: {e}", err=True)
         sys.exit(1)
+
+
+async def check_alias_available_on_network(alias: str, nats_url: str) -> bool:
+    """Check if an alias is already taken on the network.
+
+    Returns True if alias is available, False if already taken.
+    Raises RuntimeError if network is unreachable.
+    """
+    import nats
+    import msgpack
+
+    try:
+        # Connect to NATS temporarily
+        nc = await nats.connect(nats_url, connect_timeout=5)
+
+        # Subscribe to a temporary inbox for responses
+        responses = []
+
+        async def response_handler(msg):
+            try:
+                data = msgpack.unpackb(msg.data)
+                for node_info in data:
+                    if node_info.get('node_id') == alias:
+                        responses.append(node_info)
+            except:
+                pass
+
+        # Create temporary subscription
+        inbox = nc.new_inbox()
+        sub = await nc.subscribe(inbox, cb=response_handler)
+
+        # Send discovery request for all node types
+        await nc.publish("node.discover.heavy", msgpack.packb({}), reply=inbox)
+        await nc.publish("node.discover.light", msgpack.packb({}), reply=inbox)
+
+        # Wait for responses (2 seconds should be enough)
+        await asyncio.sleep(2)
+
+        # Cleanup
+        await sub.unsubscribe()
+        await nc.close()
+
+        # If we got any responses with this alias, it's taken
+        return len(responses) == 0
+
+    except Exception as e:
+        # Network is unreachable - fail registration
+        raise RuntimeError(f"Cannot connect to NATS network at {nats_url}: {e}")
 
 
 async def send_ipc_command(node_alias: str, command: dict):
