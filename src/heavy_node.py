@@ -6,7 +6,7 @@ import msgpack
 from datetime import datetime
 from light_node import LightNode
 from loguru import logger
-from db import MOD
+from config import MODULUS
 
 class HeavyNode(LightNode):
     """Heavy node that coordinates and can also execute computations."""

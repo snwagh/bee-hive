@@ -17,3 +17,6 @@ PEER_REFRESH_INTERVAL = 30  # 30 seconds
 
 # Timeouts
 NATS_CONNECT_TIMEOUT = 5  # seconds
+
+# Computation Configuration
+MODULUS = 2 ** 32  # Modulo for all secret sharing arithmetic operations

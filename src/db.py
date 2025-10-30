@@ -5,9 +5,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-
-
-MOD = 2 ** 32  # Modulo for all arithmetic operations
+from config import MODULUS
 
 
 class ComputationDB:
@@ -95,7 +93,7 @@ class ComputationDB:
             UPDATE proposed_computations
             SET final_result = ?, status = 'completed'
             WHERE id = ?
-        """, (final_result % MOD, comp_id))
+        """, (final_result % MODULUS, comp_id))
         self.conn.commit()
 
     def get_proposed(self, comp_id: str) -> Optional[Dict[str, Any]]:
@@ -149,7 +147,7 @@ class ComputationDB:
             return 0
 
         shares = json.loads(row['shares']) if row['shares'] else {}
-        total = sum(shares.values()) % MOD
+        total = sum(shares.values()) % MODULUS
 
         cursor.execute("""
             UPDATE aggregator_computations

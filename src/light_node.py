@@ -8,7 +8,7 @@ import msgpack
 from datetime import datetime
 from base_node import BaseNode
 from loguru import logger
-from db import MOD
+from config import MODULUS
 
 class LightNode(BaseNode):
     """Light node that executes computations."""
@@ -22,8 +22,8 @@ class LightNode(BaseNode):
     
     def generate_secret_shares(self, value: int, num_shares: int) -> List[int]:
         """Generate N random shares that sum to value (mod 2**32)."""
-        shares = [random.randint(0, MOD - 1) for _ in range(num_shares - 1)]
-        last_share = (value - sum(shares)) % MOD
+        shares = [random.randint(0, MODULUS - 1) for _ in range(num_shares - 1)]
+        last_share = (value - sum(shares)) % MODULUS
         shares.append(last_share)
         logger.debug(f"[{self.node_id}] Generated {num_shares} shares for value {value}")
         return shares
@@ -193,7 +193,7 @@ class LightNode(BaseNode):
             return
 
         # Sum all aggregator values (mod 2**32)
-        final_total = sum(r['value'] for r in aggregator_results) % MOD
+        final_total = sum(r['value'] for r in aggregator_results) % MODULUS
 
         logger.info(f"[{self.node_id}] Final aggregated value for {comp_id}: {final_total}")
         logger.info(f"  Components: {[r['value'] for r in aggregator_results]}")
