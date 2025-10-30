@@ -269,9 +269,9 @@ class BaseNode:
                 )
 
                 if key_updated:
-                    logger.info(f"[{self.node_id}] UPDATED peer {peer_id} ({node_type}) with new public key")
+                    logger.debug(f"[{self.node_id}] UPDATED peer {peer_id} ({node_type}) with new public key")
                 else:
-                    logger.info(f"[{self.node_id}] Stored peer {peer_id} ({node_type}) in memory and persistent storage")
+                    logger.debug(f"[{self.node_id}] Stored peer {peer_id} ({node_type}) in memory and persistent storage")
         except Exception as e:
             logger.error(f"[{self.node_id}] Error handling registration: {e}")
 
