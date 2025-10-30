@@ -160,6 +160,9 @@ class HeavyNode(LightNode):
         # Start periodic peer refresh
         asyncio.create_task(self._refresh_peers_periodically())
 
+        # Start heartbeat to keep alias alive in network registry
+        asyncio.create_task(self._heartbeat_task())
+
         # Heavy node subscriptions - use node-specific channel
         await self.nc.subscribe(f"comp.proposal.{self.node_id}", cb=self._handle_proposal)
         await self.nc.subscribe(f"comp.result.{self.node_id}", cb=self._handle_result)

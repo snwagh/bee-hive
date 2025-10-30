@@ -14,6 +14,7 @@ import click
 
 # Import the shared identity module
 from identity import IdentityManager
+from config import DEFAULT_NATS_URL, REGISTRY_BUCKET_NAME, REGISTRY_TTL, NATS_CONNECT_TIMEOUT
 
 
 class NodeManager:
@@ -41,7 +42,7 @@ class NodeManager:
                 self._save_pids(pids)
         return False
 
-    def start_node(self, identity: Dict, nats_url: str = "nats://20.81.248.221:4222"):
+    def start_node(self, identity: Dict, nats_url: str = DEFAULT_NATS_URL):
         """Start a node process in the background."""
         alias = identity["alias"]
         node_type = identity["node_type"]
@@ -190,7 +191,7 @@ def cli():
 
 
 @cli.command()
-@click.option('--nats-url', default='nats://20.81.248.221:4222',
+@click.option('--nats-url', default=DEFAULT_NATS_URL,
               help='NATS server URL')
 def register(nats_url):
     """Register a new node on the network."""
@@ -267,6 +268,27 @@ def register(nats_url):
         # Create new identity (no alias in constructor for creation)
         identity_mgr = IdentityManager()
         identity = identity_mgr.create_identity(alias, email, password, node_type)
+
+        # Register in NATS KV store
+        click.echo(f"📝 Registering alias in network registry...")
+        try:
+            import time
+            metadata = {
+                "alias": alias,
+                "node_type": node_type,
+                "registered_at": time.time()
+            }
+            asyncio.run(register_alias_in_registry(alias, nats_url, metadata))
+            click.echo(f"✅ Alias registered in network registry")
+        except Exception as e:
+            # Rollback local identity if network registration fails
+            import shutil
+            node_dir = Path.home() / ".bee-hive" / alias
+            if node_dir.exists():
+                shutil.rmtree(node_dir)
+            click.echo(f"❌ Failed to register on network: {e}", err=True)
+            click.echo(f"   Local identity has been rolled back", err=True)
+            sys.exit(1)
 
         # Start node
         click.echo()
@@ -510,6 +532,11 @@ def deregister(alias):
         else:
             click.echo(f"\nℹ️  Node '{alias}' is not running")
 
+        # Remove from network registry
+        click.echo(f"📝 Removing alias from network registry...")
+        asyncio.run(deregister_alias_from_registry(alias, nats_url=DEFAULT_NATS_URL))
+        click.echo(f"✅ Removed from network registry")
+
         # Remove entire node directory (includes keys, data, identities.json)
         click.echo(f"🗑️  Removing node directory...")
         import shutil
@@ -535,7 +562,7 @@ def deregister(alias):
 
 
 async def check_alias_available_on_network(alias: str, nats_url: str) -> bool:
-    """Check if an alias is already taken on the network.
+    """Check if an alias is available using NATS KV store.
 
     Returns True if alias is available, False if already taken.
     Raises RuntimeError if network is unreachable.
@@ -544,42 +571,78 @@ async def check_alias_available_on_network(alias: str, nats_url: str) -> bool:
     import msgpack
 
     try:
-        # Connect to NATS temporarily
-        nc = await nats.connect(nats_url, connect_timeout=5)
+        # Connect to NATS
+        nc = await nats.connect(nats_url, connect_timeout=NATS_CONNECT_TIMEOUT)
+        js = nc.jetstream()
 
-        # Subscribe to a temporary inbox for responses
-        responses = []
+        # Get or create node registry KV bucket
+        try:
+            kv = await js.key_value(REGISTRY_BUCKET_NAME)
+        except:
+            # Create if doesn't exist
+            kv = await js.create_key_value(
+                bucket=REGISTRY_BUCKET_NAME,
+                description="Network-wide node alias registry",
+                ttl=REGISTRY_TTL,  # Auto-expire after configured TTL (nodes must heartbeat)
+            )
 
-        async def response_handler(msg):
-            try:
-                data = msgpack.unpackb(msg.data)
-                for node_info in data:
-                    if node_info.get('node_id') == alias:
-                        responses.append(node_info)
-            except:
-                pass
+        # Check if alias exists
+        try:
+            entry = await kv.get(alias)
+            if entry:
+                await nc.close()
+                return False  # Alias taken
+        except:
+            # Key doesn't exist - available!
+            pass
 
-        # Create temporary subscription
-        inbox = nc.new_inbox()
-        sub = await nc.subscribe(inbox, cb=response_handler)
-
-        # Send discovery request for all node types
-        await nc.publish("node.discover.heavy", msgpack.packb({}), reply=inbox)
-        await nc.publish("node.discover.light", msgpack.packb({}), reply=inbox)
-
-        # Wait for responses (2 seconds should be enough)
-        await asyncio.sleep(2)
-
-        # Cleanup
-        await sub.unsubscribe()
         await nc.close()
-
-        # If we got any responses with this alias, it's taken
-        return len(responses) == 0
+        return True  # Available
 
     except Exception as e:
-        # Network is unreachable - fail registration
         raise RuntimeError(f"Cannot connect to NATS network at {nats_url}: {e}")
+
+
+async def register_alias_in_registry(alias: str, nats_url: str, metadata: dict):
+    """Register alias in NATS KV store after local identity creation."""
+    import nats
+    import msgpack
+
+    nc = await nats.connect(nats_url, connect_timeout=NATS_CONNECT_TIMEOUT)
+    js = nc.jetstream()
+
+    # Get or create KV bucket
+    try:
+        kv = await js.key_value(REGISTRY_BUCKET_NAME)
+    except:
+        kv = await js.create_key_value(
+            bucket=REGISTRY_BUCKET_NAME,
+            description="Network-wide node alias registry",
+            ttl=REGISTRY_TTL,
+        )
+
+    # Store alias with metadata (using create for atomicity)
+    try:
+        await kv.create(alias, msgpack.packb(metadata))
+    except:
+        # If create fails, key already exists - use put to update
+        await kv.put(alias, msgpack.packb(metadata))
+
+    await nc.close()
+
+
+async def deregister_alias_from_registry(alias: str, nats_url: str):
+    """Remove alias from NATS KV registry during deregistration."""
+    import nats
+
+    try:
+        nc = await nats.connect(nats_url, connect_timeout=NATS_CONNECT_TIMEOUT)
+        js = nc.jetstream()
+        kv = await js.key_value(REGISTRY_BUCKET_NAME)
+        await kv.delete(alias)
+        await nc.close()
+    except:
+        pass  # Best effort cleanup
 
 
 async def send_ipc_command(node_alias: str, command: dict):

@@ -233,6 +233,9 @@ class LightNode(BaseNode):
         # Start periodic peer refresh
         asyncio.create_task(self._refresh_peers_periodically())
 
+        # Start heartbeat to keep alias alive in network registry
+        asyncio.create_task(self._heartbeat_task())
+
         # Subscribe to node-specific broadcasts from heavy nodes
         await self.nc.subscribe(f"comp.broadcast.{self.node_id}", cb=self._handle_execute_broadcast)
 

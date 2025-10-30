@@ -16,6 +16,7 @@ import secrets
 from loguru import logger
 from db import ComputationDB
 from identity import IdentityManager
+from config import REGISTRY_BUCKET_NAME, HEARTBEAT_INTERVAL, PEER_REFRESH_INTERVAL
 
 class BaseNode:
     """Base class for all nodes in the network."""
@@ -279,7 +280,7 @@ class BaseNode:
         """Periodically re-publish registration to keep network view updated."""
         while not self.shutdown_event.is_set():
             try:
-                await asyncio.sleep(30)  # Refresh every 30 seconds
+                await asyncio.sleep(PEER_REFRESH_INTERVAL)
 
                 if self.shutdown_event.is_set():
                     break
@@ -303,6 +304,35 @@ class BaseNode:
             except Exception as e:
                 if not self.shutdown_event.is_set():
                     logger.error(f"[{self.node_id}] Error refreshing peers: {e}")
+
+    async def _heartbeat_task(self):
+        """Refresh alias registration in NATS KV store to prevent TTL expiry."""
+        while not self.shutdown_event.is_set():
+            try:
+                await asyncio.sleep(HEARTBEAT_INTERVAL)
+
+                if self.shutdown_event.is_set():
+                    break
+
+                # Update registration in KV store to extend TTL
+                metadata = {
+                    "alias": self.node_id,
+                    "node_type": self.get_node_type(),
+                    "last_heartbeat": datetime.utcnow().timestamp()
+                }
+
+                try:
+                    kv = await self.js.key_value(REGISTRY_BUCKET_NAME)
+                    await kv.put(self.node_id, msgpack.packb(metadata))
+                    logger.debug(f"[{self.node_id}] Heartbeat sent to network registry")
+                except Exception as e:
+                    logger.warning(f"[{self.node_id}] Failed to send heartbeat: {e}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                if not self.shutdown_event.is_set():
+                    logger.error(f"[{self.node_id}] Error in heartbeat task: {e}")
     
     async def start_ipc_server(self):
         """Start Unix socket server for CLI."""
