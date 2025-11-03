@@ -1,0 +1,26 @@
+[project]
+name = "bee-hive-flower"
+version = "0.1.0"
+description = "Network and identity layer for Bee-Hive"
+requires-python = ">=3.12"
+dependencies = [
+    "bee-hive-core",
+    "click>=8.1.0",
+    "nats-py>=2.6.0",
+    "msgpack>=1.0.0",
+    "cryptography>=41.0.0",
+    "loguru>=0.7.0",
+]
+
+[project.scripts]
+bee-hive = "flower.cli:cli"
+
+[tool.uv.sources]
+bee-hive-core = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/flower"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

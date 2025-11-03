@@ -1,17 +1,19 @@
 [project]
-name = "bee-hive-network"
+name = "bee-hive"
 version = "0.1.0"
-description = "Decentralized LLM computation network with E2E encryption"
-requires-python = ">=3.9"
-dependencies = [
-    "nats-py>=2.6.0",
-    "click>=8.1.0",
-    "msgpack>=1.0.0",
-    "pyyaml>=6.0",
-    "aiofiles>=23.0.0",
-    "cryptography>=41.0.0",
-    "loguru>=0.7.0",
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "bump2version>=1.0.1",
+    "pytest>=8.0.0",
 ]
 
-[project.scripts]
-bee-hive = "bee_hive_cli:cli"
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+bee-hive-core = { workspace = true }
+bee-hive-flower = { workspace = true }
+bee-hive-nectar = { workspace = true }

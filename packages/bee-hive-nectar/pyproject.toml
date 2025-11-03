@@ -1,0 +1,24 @@
+[project]
+name = "bee-hive-nectar"
+version = "0.1.0"
+description = "Computation handler framework for Bee-Hive"
+requires-python = ">=3.12"
+dependencies = [
+    "bee-hive-core",
+    "watchdog>=3.0.0",
+    "click>=8.1.0",
+    "loguru>=0.7.0",
+]
+
+[project.scripts]
+nectar = "nectar.cli:main"
+
+[tool.uv.sources]
+bee-hive-core = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nectar"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

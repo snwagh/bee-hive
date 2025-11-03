@@ -13,8 +13,8 @@ from typing import Dict
 import click
 
 # Import the shared identity module
-from identity import IdentityManager
-from config import DEFAULT_NATS_URL, REGISTRY_BUCKET_NAME, REGISTRY_TTL, NATS_CONNECT_TIMEOUT
+from flower.identity import IdentityManager
+from bee_hive_core.config import DEFAULT_NATS_URL, REGISTRY_BUCKET_NAME, REGISTRY_TTL, NATS_CONNECT_TIMEOUT
 
 
 class NodeManager:
@@ -67,11 +67,12 @@ class NodeManager:
             python_exe,
             "-c",
             f"""
-import sys
-sys.path.insert(0, '{src_dir}')
-from {node_type}_node import {node_type.capitalize()}Node
+import json
+from pathlib import Path
+from flower.{node_type}_node import {node_type.capitalize()}Node
 import asyncio
 
+# Initialize node
 node = {node_type.capitalize()}Node(
     node_id='{alias}',
     nats_url='{nats_url}',
@@ -79,6 +80,8 @@ node = {node_type.capitalize()}Node(
     private_key_path='{private_key_path}',
     public_key_path='{public_key_path}'
 )
+
+# Run node
 asyncio.run(node.run())
 """
         ]
@@ -272,11 +275,11 @@ def register(nats_url):
         # Register in NATS KV store
         click.echo(f"📝 Registering alias in network registry...")
         try:
-            import time
+            from datetime import datetime
             metadata = {
                 "alias": alias,
                 "node_type": node_type,
-                "registered_at": time.time()
+                "registered_at": datetime.utcnow().timestamp()
             }
             asyncio.run(register_alias_in_registry(alias, nats_url, metadata))
             click.echo(f"✅ Alias registered in network registry")
@@ -430,6 +433,15 @@ def list():
 
     node_mgr = NodeManager()
 
+    # Load handler information
+    handlers_file = Path.home() / ".bee-hive" / "nectar" / "handlers.json"
+    handlers_data = {}
+    if handlers_file.exists():
+        try:
+            handlers_data = json.loads(handlers_file.read_text())
+        except:
+            pass
+
     for node in nodes:
         alias = node["alias"]
         node_type = node["node_type"]
@@ -449,9 +461,25 @@ def list():
             except:
                 pass
 
+        # Show handler info for this alias
+        handler_name = None
+        handler_status = None
+        for h_name, h_data in handlers_data.items():
+            if alias in h_data.get("attached_aliases", []):
+                handler_name = h_name
+                handler_status = h_data.get("status", "unknown")
+                break
+
+        if handler_name:
+            handler_icon = "✅" if handler_status == "running" else "⚠️"
+            click.echo(f"           Handler: {handler_icon} {handler_name} ({handler_status})")
+        else:
+            click.echo(f"           Handler: (none - attach with 'nectar attach')")
+
         click.echo()
 
     click.echo(f"Total: {len(nodes)} node(s)")
+    click.echo(f"\n💡 To manage computation handlers: nectar view")
 
 
 @cli.command()
@@ -508,6 +536,20 @@ def deregister(alias):
     except ValueError as e:
         click.echo(f"\n❌ {e}", err=True)
         sys.exit(1)
+
+    # Check for attached handlers
+    handlers_file = Path.home() / ".bee-hive" / "nectar" / "handlers.json"
+    if handlers_file.exists():
+        try:
+            handlers_data = json.loads(handlers_file.read_text())
+            for h_name, h_data in handlers_data.items():
+                if alias in h_data.get("attached_aliases", []):
+                    click.echo(f"\n⚠️  WARNING: Handler '{h_name}' is attached to this node.")
+                    click.echo(f"   Consider detaching it first with: nectar detach {h_name} {alias}")
+                    click.echo(f"   (Handler will continue running but won't process this node's computations)")
+                    break
+        except:
+            pass
 
     # Show what will be deleted
     click.echo(f"\n⚠️  WARNING: This will permanently delete:")

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from config import MODULUS
+from bee_hive_core.config import MODULUS
 
 
 class ComputationDB:

@@ -14,9 +14,9 @@ from cryptography.hazmat.backends import default_backend
 import base64
 import secrets
 from loguru import logger
-from db import ComputationDB
-from identity import IdentityManager
-from config import REGISTRY_BUCKET_NAME, HEARTBEAT_INTERVAL, PEER_REFRESH_INTERVAL
+from flower.db import ComputationDB
+from flower.identity import IdentityManager
+from bee_hive_core.config import REGISTRY_BUCKET_NAME, HEARTBEAT_INTERVAL, PEER_REFRESH_INTERVAL
 
 class BaseNode:
     """Base class for all nodes in the network."""

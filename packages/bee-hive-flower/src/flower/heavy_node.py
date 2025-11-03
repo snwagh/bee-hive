@@ -4,9 +4,9 @@ import signal
 from typing import Dict, List
 import msgpack
 from datetime import datetime
-from light_node import LightNode
+from flower.light_node import LightNode
 from loguru import logger
-from config import MODULUS
+from bee_hive_core.config import MODULUS
 
 class HeavyNode(LightNode):
     """Heavy node that coordinates and can also execute computations."""
@@ -117,7 +117,7 @@ class HeavyNode(LightNode):
             "aggregated_value": aggregated_value,
             "num_results": num_shares,
             "aggregator": self.node_id,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().timestamp()
         }
 
         if proposer_id in self.peer_keys:

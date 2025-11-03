@@ -5,7 +5,7 @@ Handles cryptographic identities, key generation, and credential storage.
 """
 import json
 import hashlib
-import time
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Tuple
 import base64
@@ -150,7 +150,7 @@ class IdentityManager:
             "password_hash": password_hash,
             "public_key": base64.b64encode(public_pem).decode('utf-8'),
             "node_type": node_type,
-            "created": time.time(),
+            "created": datetime.utcnow().timestamp(),
             "last_used": None,
             "identity_dir": str(identity_dir)
         }
@@ -187,7 +187,7 @@ class IdentityManager:
             raise ValueError("Invalid password")
 
         # Update last used
-        identity["last_used"] = time.time()
+        identity["last_used"] = datetime.utcnow().timestamp()
         identities = self._load_identities()
         identities[self.alias] = identity
         self._save_identities(identities)
@@ -250,7 +250,7 @@ class IdentityManager:
         if peer_alias in identities and identities[peer_alias].get("type") == "local":
             return
 
-        now = time.time()
+        now = datetime.utcnow().timestamp()
 
         if peer_alias in identities:
             # Update existing peer

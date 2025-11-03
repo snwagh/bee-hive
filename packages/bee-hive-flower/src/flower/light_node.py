@@ -6,15 +6,18 @@ import signal
 from typing import List
 import msgpack
 from datetime import datetime
-from base_node import BaseNode
+from flower.base_node import BaseNode
+from flower.dispatcher import ComputationDispatcher
 from loguru import logger
-from config import MODULUS
+from bee_hive_core.config import MODULUS
+from bee_hive_core.types import Computation
 
 class LightNode(BaseNode):
     """Light node that executes computations."""
 
     def __init__(self, node_id: str, nats_url: str, data_dir: str, private_key_path: str, public_key_path: str):
         super().__init__(node_id, nats_url, data_dir, private_key_path, public_key_path)
+        self.dispatcher = ComputationDispatcher(self.data_dir)
         logger.info(f"[{node_id}] Initialized as light node")
     
     def get_node_type(self) -> str:
@@ -28,16 +31,33 @@ class LightNode(BaseNode):
         logger.debug(f"[{self.node_id}] Generated {num_shares} shares for value {value}")
         return shares
     
-    async def execute_computation(self, query: str) -> int:
-        """Execute the actual computation (simulated LLM call)."""
-        logger.info(f"[{self.node_id}] Executing: {query}")
-        await asyncio.sleep(2)  # Simulate LLM processing
+    async def execute_computation(self, computation: Computation) -> int:
+        """
+        Execute computation by dispatching to nectar.
+        Returns the integer result value.
+        Raises TimeoutError if no handler responds within deadline.
+        """
+        logger.info(f"[{self.node_id}] Executing computation {computation.comp_id}")
 
-        # Generate random response value (0-100)
-        # In real implementation, call Ollama here
-        response = random.randint(0, 100)
-        logger.info(f"[{self.node_id}] Generated response: {response}")
-        return response
+        # Dispatch to nectar (write .pending file)
+        self.dispatcher.dispatch(computation)
+
+        # Wait for result (poll for .complete file)
+        result = await self.dispatcher.wait_for_result(
+            computation.comp_id,
+            timeout=computation.deadline
+        )
+
+        if result.status == "success":
+            logger.info(f"[{self.node_id}] Computation {computation.comp_id} succeeded: {result.value}")
+            return result.value
+        elif result.status == "timeout":
+            # No handler attached or handler didn't respond in time
+            logger.warning(f"[{self.node_id}] Computation {computation.comp_id} timed out - no handler response")
+            raise TimeoutError(f"No handler response within {computation.deadline}s")
+        else:
+            logger.error(f"[{self.node_id}] Computation {computation.comp_id} failed: {result.error}")
+            raise RuntimeError(f"Computation failed: {result.error}")
     
     async def _handle_execute_broadcast(self, msg):
         """Handle execution request broadcast from heavy nodes."""
@@ -49,17 +69,43 @@ class LightNode(BaseNode):
             decrypted_data = self.decrypt_from_peer(encrypted_msg)
             data = msgpack.unpackb(decrypted_data)
 
-            comp = data['computation']
+            comp_dict = data['computation']
             heavy_nodes = data['heavy_nodes']  # List of heavy nodes to respond to
-            comp_id = comp['id']
+            comp_id = comp_dict['id']
 
             logger.info(f"[{self.node_id}] Received broadcast for computation {comp_id} from {sender_id}")
 
             # Store in participant table
-            self.db.insert_participant(comp_id, comp['query'])
+            self.db.insert_participant(comp_id, comp_dict['query'])
+
+            # Construct Computation object from the received data
+            # Handle timestamp - ensure it's a float
+            timestamp = comp_dict.get('timestamp', datetime.utcnow().timestamp())
+            if isinstance(timestamp, str):
+                timestamp = datetime.utcnow().timestamp()  # Use current time if invalid
+
+            computation = Computation(
+                comp_id=comp_id,
+                query=comp_dict['query'],
+                proposer=comp_dict.get('proposer', 'unknown'),
+                aggregators=comp_dict.get('aggregators', heavy_nodes),
+                targets=comp_dict.get('targets', []),
+                deadline=comp_dict.get('deadline', 30),
+                timestamp=float(timestamp),
+                metadata=comp_dict.get('metadata', {})
+            )
 
             # Execute computation
-            response_value = await self.execute_computation(comp['query'])
+            try:
+                response_value = await self.execute_computation(computation)
+            except TimeoutError as e:
+                # No handler or handler didn't respond - don't send shares
+                logger.warning(f"[{self.node_id}] Skipping share distribution for {comp_id}: {e}")
+                return
+            except Exception as e:
+                # Other execution errors - also don't send shares
+                logger.error(f"[{self.node_id}] Execution failed for {comp_id}, skipping shares: {e}")
+                return
 
             # Generate secret shares for N aggregators
             num_aggregators = len(heavy_nodes)
@@ -77,7 +123,7 @@ class LightNode(BaseNode):
                         "computation_id": comp_id,
                         "node_id": self.node_id,
                         "share": share_value,
-                        "timestamp": datetime.utcnow().isoformat()
+                        "timestamp": datetime.utcnow().timestamp()
                     }
 
                     # Encrypt for the heavy node
@@ -125,7 +171,7 @@ class LightNode(BaseNode):
             "aggregators": aggregators,
             "targets": targets,
             "deadline": deadline,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().timestamp()
         }
 
         self.active_computations[comp_id] = computation
@@ -208,7 +254,7 @@ class LightNode(BaseNode):
                 "computation_id": comp_id,
                 "final_result": final_total,
                 "aggregator_values": {r['aggregator']: r['value'] for r in aggregator_results},
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().timestamp()
             }, f, indent=2)
 
         logger.info(f"[{self.node_id}] Final result saved to {final_file}")
