@@ -1,6 +1,7 @@
 """Handler metadata and process management"""
 
 import json
+import os
 import signal
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -10,8 +11,11 @@ from datetime import datetime
 class HandlerManager:
     """Manages handler metadata and process tracking"""
 
-    def __init__(self):
-        self.base_dir = Path.home() / ".bee-hive" / "nectar"
+    def __init__(self, base_dir: str = None):
+        # Default to ~/.bee-hive if not specified
+        if base_dir is None:
+            base_dir = str(Path.home() / ".bee-hive")
+        self.base_dir = Path(base_dir) / "nectar"
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
         self.handlers_dir = self.base_dir / "handlers"

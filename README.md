@@ -27,6 +27,8 @@ Core types and configuration shared across all packages.
 
 **CLI**: `nectar` command with 7 subcommands
 
+📖 **[See nectar documentation →](packages/bee-hive-nectar/README.md)**
+
 ### 🌸 bee-hive-flower
 Network layer with identity management, encryption, and node management.
 - Node classes (BaseNode, LightNode, HeavyNode)
@@ -40,11 +42,13 @@ Network layer with identity management, encryption, and node management.
 
 **CLI**: `bee-hive` command with 6 subcommands
 
+📖 **[See flower documentation →](packages/bee-hive-flower/README.md)**
+
 ## Architecture Highlights
 
 ### Complete Decoupling
 - **Handlers are independent services**: Run in separate processes with their own dependencies
-- **File-based communication**: Nodes write `.pending` files, handlers write `.complete` files
+- **File-based communication**: Flower nodes write `.pending` files, handlers write `.complete` files
 - **Multi-alias support**: One handler can serve multiple nodes simultaneously
 - **Dynamic attachment**: Attach/detach handlers without restarting nodes
 
@@ -57,11 +61,27 @@ Network layer with identity management, encryption, and node management.
 5. Node writes .pending → Handler processes → Handler writes .complete
 ```
 
+### Data Directory Architecture
+
+**Production** (`~/.bee-hive`):
+- Default behavior when no flag specified
+- Persistent data across sessions
+- Suitable for long-running production nodes
+
+**Testing** (`./sandbox`):
+- Explicit `--data-dir ./sandbox` flag
+- Isolated test data in project directory
+- Clean separation from production
+- Easy to reset with `./scripts/reset.sh`
+
 ## Installation
 
 ```bash
 # Install uv if you haven't already
 curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install Docker Desktop and run the daemon
+# Required for NATS server
 
 # Clone the repository
 cd bee-hive
@@ -77,12 +97,114 @@ uv pip install -e packages/bee-hive-nectar
 # bee-hive-core is automatically installed as a dependency
 ```
 
-## Quick Start
+## Development & Testing
 
-### 1. Test a Handler (No Network Required)
+### Developer Installation
+
+After making changes to the codebase, reinstall packages to pick up modifications:
 
 ```bash
-# Create handler
+# Force reinstall all packages in editable mode
+uv pip install --force-reinstall -e packages/*
+
+# This reinstalls:
+# - packages/bee-hive-core (shared types and config)
+# - packages/bee-hive-nectar (handler framework)
+# - packages/bee-hive-flower (network layer and CLI)
+```
+
+### Running Integration Tests
+
+The project includes automated integration tests in `./scripts/`:
+
+```bash
+# Run full integration test (starts NATS, registers nodes, attaches handlers, runs computations)
+./scripts/test.sh
+
+# Expected output:
+# - 5 nodes registered (alice, bob, charlie, dave, eve)
+# - 1 handler attached to all nodes
+# - 2 test computations submitted and verified
+```
+
+**Test Environment**: Tests run in isolated `./sandbox` directory (separate from production `~/.bee-hive`) and uses a localhost deployed server.
+
+### Individual Test Scripts
+
+```bash
+# 1. Start NATS server (required first)
+./scripts/start_nats.sh
+
+# 2. Register test nodes (alice, bob, charlie, dave, eve)
+./scripts/start_nodes.sh
+
+# 3. Attach example handler to all nodes
+./scripts/attach_handlers.sh
+
+# 4. View node status
+uv run bee-hive --data-dir ./sandbox list
+
+# 5. View handler status
+uv run nectar --data-dir ./sandbox view
+```
+
+### Resetting Test Environment
+
+```bash
+# Complete cleanup: stops all processes, removes sandbox, resets NATS
+./scripts/reset.sh
+
+# Then start fresh:
+./scripts/test.sh
+```
+
+### Troubleshooting Tests
+
+**Orphaned Processes**:
+```bash
+# Check for orphaned node processes
+ps aux | grep -E "HeavyNode|LightNode"
+
+# Kill all orphaned processes
+./scripts/reset.sh  # Includes aggressive process cleanup
+```
+
+**Node Count Issues**:
+```bash
+# Verify correct node count (should be 5 for tests)
+uv run bee-hive --data-dir ./sandbox list | grep -c "🟢 running"
+
+# If incorrect, run reset and restart
+./scripts/reset.sh
+./scripts/test.sh
+```
+
+**NATS Server Issues**:
+```bash
+# Check NATS server status
+docker ps | grep bee-hive-server
+
+# Restart NATS server
+docker-compose restart
+
+# Full reset (removes NATS data volume)
+./scripts/reset.sh
+```
+
+## Integration Quick Start
+
+This section shows how the packages work together in a complete workflow.
+
+### 1. Start NATS Server
+
+```bash
+docker-compose up -d
+```
+
+### 2. Create a Handler (nectar)
+
+```bash
+# Create handler file
 cat > my_handler.py <<'EOF'
 from nectar import handler, Computation
 
@@ -91,47 +213,44 @@ def analyze(comp: Computation) -> int:
     return len(comp.query) * 2
 EOF
 
-# Test it
+# Test it locally (no network required)
 uv run nectar test my_handler.py
-# Output: ✅ Handler test passed! Result: 42
+# Output: ✅ Handler test passed! Result: 84
 ```
 
-### 2. Run the Full System
+### 3. Register Nodes (flower)
 
-**Start NATS server:**
 ```bash
-docker-compose up -d
-```
-
-**Register nodes:**
-```bash
-# Register a heavy node
+# Register a heavy node (aggregator)
 uv run bee-hive register
 # Enter: heavy, h1, h1@example.com, password
 
-# Register a light node
+# Register a light node (worker)
 uv run bee-hive register
 # Enter: light, alice, alice@example.com, password
 
 # List nodes
 uv run bee-hive list
-# Shows nodes with handler info
+# Shows: 2 nodes (h1, alice)
 ```
 
-**Launch and attach handler:**
+### 4. Launch and Attach Handler (nectar)
+
 ```bash
-# Launch handler daemon
+# Launch handler as daemon
 uv run nectar launch my_handler.py sentiment_v1
 
-# Attach to node
+# Attach to nodes
 uv run nectar attach sentiment_v1 alice
+uv run nectar attach sentiment_v1 h1
 
 # View handler status
 uv run nectar view
-# Shows: sentiment_v1 (running) watching alice
+# Shows: sentiment_v1 (running) watching alice, h1
 ```
 
-**Submit computation:**
+### 5. Submit Computation (flower)
+
 ```bash
 # Submit computation
 uv run bee-hive submit "Test query" \
@@ -140,34 +259,61 @@ uv run bee-hive submit "Test query" \
   --targets alice,h1 \
   --deadline 30
 
-# Watch handler logs
+# Watch handler process it
 uv run nectar logs sentiment_v1
 
-# Check results
+# Check results (after deadline)
 cat ~/.bee-hive/alice/data/final_*.json
 ```
 
-## CLI Commands
+## Package Communication Flow
 
-### bee-hive (Node Management)
-```bash
-uv run bee-hive list         # List nodes with handler info
-uv run bee-hive register     # Register new node (interactive)
-uv run bee-hive submit       # Submit computation
-uv run bee-hive logs <alias> # View node logs
-uv run bee-hive peers <alias> # Show known peers (debugging)
-uv run bee-hive deregister   # Remove node (password required)
 ```
-
-### nectar (Handler Management)
-```bash
-uv run nectar test <file>           # Test handler locally
-uv run nectar launch <file> <name>  # Launch handler daemon
-uv run nectar attach <name> <alias> # Attach to node (one per alias)
-uv run nectar detach <name> <alias> # Detach from node
-uv run nectar view                  # List all handlers
-uv run nectar logs <name>           # Stream handler logs
-uv run nectar stop <name>           # Stop handler daemon
+User Command
+    ↓
+┌─────────────────────────────────────────────────────────┐
+│ bee-hive submit (flower CLI)                           │
+│ - Creates computation                                   │
+│ - Sends to aggregator via IPC                          │
+└─────────────────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────────────────┐
+│ HeavyNode (flower)                                      │
+│ - Distributes to targets via NATS                      │
+│ - Receives shares from workers                         │
+└─────────────────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────────────────┐
+│ LightNode (flower)                                      │
+│ - Receives computation via NATS                        │
+│ - Writes .pending file                                 │
+└─────────────────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────────────────┐
+│ Handler Daemon (nectar)                                 │
+│ - Watches for .pending files                           │
+│ - Executes @handler function                           │
+│ - Writes .complete file                                │
+└─────────────────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────────────────┐
+│ LightNode (flower)                                      │
+│ - Reads .complete file                                 │
+│ - Generates secret shares                              │
+│ - Sends shares to aggregators via NATS                 │
+└─────────────────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────────────────┐
+│ HeavyNode (flower)                                      │
+│ - Aggregates shares                                     │
+│ - Sends to proposer via NATS                           │
+└─────────────────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────────────────┐
+│ Proposer (flower)                                       │
+│ - Final aggregation                                     │
+│ - Writes result to disk                                │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ## Key Features
@@ -180,17 +326,8 @@ uv run nectar stop <name>           # Stop handler daemon
 ✅ **Process Isolation**: Handler crashes don't affect network
 ✅ **One Handler Per Alias**: Enforced to prevent conflicts
 ✅ **Graceful Degradation**: Nodes work without handlers (accumulate `.pending` files)
-
-## Examples
-
-See `examples/` directory:
-- `example_handler.py` - Example custom handler with external dependencies
-- `test_handler.py` - Standalone testing without network
-
-## Documentation
-
-- **README.md** (this file): Quick start and package overview
-- **claude.md**: Complete system design, architecture details, and comprehensive documentation
+✅ **Cross-Machine Support**: Nodes can run on different physical machines
+✅ **E2E Encryption**: Hybrid RSA + AES encryption for all messages
 
 ## Architecture Diagram
 
@@ -203,18 +340,34 @@ See `examples/` directory:
 │   └── logs/                  # Handler logs
 │       └── sentiment_v1.log
 │
-├── alice/                     # Node data
-│   ├── identities.json
+├── alice/                     # Node data (flower)
+│   ├── identities.json        # Node's view of network
 │   ├── keys/
+│   │   ├── private_key.pem
+│   │   └── public_key.pem
 │   └── data/
+│       ├── local.db
+│       ├── node.log
 │       ├── computation/       # Handler watches this
 │       │   ├── *.pending      # Written by node
 │       │   └── *.complete     # Written by handler
-│       └── final_*.json
+│       └── final_*.json       # Aggregated results
 │
 └── bob/                       # Another node
     └── ...
 ```
+
+## Examples
+
+See `examples/` directory:
+- `example_handlers/handler_query_length.py` - Example handler used in tests
+- More examples coming soon
+
+## Documentation
+
+- **README.md** (this file): Integration, testing, and quick start
+- **[packages/bee-hive-nectar/README.md](packages/bee-hive-nectar/README.md)**: Nectar-specific documentation
+- **[packages/bee-hive-flower/README.md](packages/bee-hive-flower/README.md)**: Flower-specific documentation
 
 ## License
 

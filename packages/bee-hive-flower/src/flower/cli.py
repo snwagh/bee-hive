@@ -6,6 +6,7 @@ Unified command-line interface for managing nodes and submitting computations.
 import asyncio
 import json
 import sys
+import os
 import getpass
 import subprocess
 from pathlib import Path
@@ -20,9 +21,11 @@ from bee_hive_core.config import DEFAULT_NATS_URL, REGISTRY_BUCKET_NAME, REGISTR
 class NodeManager:
     """Manages node processes."""
 
-    def __init__(self):
-        # Data is now stored in ~/.bee-hive/{alias}/data/
-        self.base_dir = Path.home() / ".bee-hive"
+    def __init__(self, base_dir: str = None):
+        # Data is now stored in base_dir/{alias}/data/
+        if base_dir is None:
+            base_dir = str(Path.home() / ".bee-hive")
+        self.base_dir = Path(base_dir)
         self.base_dir.mkdir(exist_ok=True)
         self.pids_file = self.base_dir / "node_pids.json"
 
@@ -51,7 +54,7 @@ class NodeManager:
         node_data_dir.mkdir(parents=True, exist_ok=True)
 
         # Get key paths using static method
-        private_key_path, public_key_path = IdentityManager.get_key_paths_for_alias(alias)
+        private_key_path, public_key_path = IdentityManager.get_key_paths_for_alias(alias, self.base_dir)
 
         click.echo(f"🚀 Starting {node_type} node '{alias}'...")
 
@@ -188,57 +191,80 @@ asyncio.run(node.run())
 
 
 @click.group()
-def cli():
+@click.option('--data-dir',
+              default=str(Path.home() / '.bee-hive'),
+              help='Data directory (default: ~/.bee-hive)')
+@click.pass_context
+def cli(ctx, data_dir):
     """Bee-Hive Network - Decentralized LLM Computation System"""
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj['data_dir'] = data_dir
 
 
 @cli.command()
 @click.option('--nats-url', default=DEFAULT_NATS_URL,
               help='NATS server URL')
-def register(nats_url):
+@click.option('--alias', help='Node alias (for non-interactive mode)')
+@click.option('--email', help='Email address (for non-interactive mode)')
+@click.option('--node-type', type=click.Choice(['heavy', 'light'], case_sensitive=False),
+              help='Node type (for non-interactive mode)')
+@click.option('--password', help='Password (for non-interactive mode)')
+@click.pass_context
+def register(ctx, nats_url, alias, email, node_type, password):
     """Register a new node on the network."""
 
-    click.echo("╔═══════════════════════════════════════════════════╗")
-    click.echo("║         Bee-Hive Network Registration             ║")
-    click.echo("╚═══════════════════════════════════════════════════╝\n")
+    # Interactive mode if any required option is missing
+    interactive_mode = not (alias and email and node_type and password)
 
-    # Collect information
-    node_type = click.prompt(
-        "Node type",
-        type=click.Choice(['heavy', 'light'], case_sensitive=False),
-        default='light'
-    )
+    if interactive_mode:
+        click.echo("╔═══════════════════════════════════════════════════╗")
+        click.echo("║         Bee-Hive Network Registration             ║")
+        click.echo("╚═══════════════════════════════════════════════════╝\n")
 
-    alias = click.prompt("Alias (node name)")
+    # Collect information (interactive or use provided flags)
+    if not node_type:
+        node_type = click.prompt(
+            "Node type",
+            type=click.Choice(['heavy', 'light'], case_sensitive=False),
+            default='light'
+        )
 
-    email = click.prompt("Email")
+    if not alias:
+        alias = click.prompt("Alias (node name)")
 
-    password = getpass.getpass("Password (min 8 characters): ")
-    password_confirm = getpass.getpass("Confirm password: ")
+    if not email:
+        email = click.prompt("Email")
 
-    if password != password_confirm:
-        click.echo("❌ Passwords do not match", err=True)
-        sys.exit(1)
+    if not password:
+        password = getpass.getpass("Password (min 8 characters): ")
+        password_confirm = getpass.getpass("Confirm password: ")
+
+        if password != password_confirm:
+            click.echo("❌ Passwords do not match", err=True)
+            sys.exit(1)
 
     try:
+        data_dir = ctx.obj['data_dir']
+
         # Check if node already exists locally
-        if IdentityManager.node_exists(alias):
+        if IdentityManager.node_exists(alias, data_dir):
             click.echo(f"\n⚠️  Node '{alias}' already exists on this machine.")
 
             # Try to verify with provided password
             try:
-                identity_mgr = IdentityManager(alias=alias)
+                identity_mgr = IdentityManager(alias=alias, base_dir=data_dir)
                 identity = identity_mgr.verify_identity(password)
                 click.echo(f"✅ Verified identity: @{alias}")
 
                 # Check if node is running
-                node_mgr = NodeManager()
+                node_mgr = NodeManager(base_dir=data_dir)
                 if node_mgr.is_running(alias):
                     click.echo(f"✅ Node '{alias}' is already running on the network")
                 else:
                     click.echo(f"⚠️  Node '{alias}' is not running")
-                    if click.confirm("Start the node?", default=True):
+                    # Auto-start in non-interactive mode, otherwise ask
+                    should_start = not interactive_mode or click.confirm("Start the node?", default=True)
+                    if should_start:
                         node_mgr.start_node(identity, nats_url)
 
             except ValueError as e:
@@ -269,7 +295,7 @@ def register(nats_url):
         click.echo(f"✅ Alias '@{alias}' is available!")
 
         # Create new identity (no alias in constructor for creation)
-        identity_mgr = IdentityManager()
+        identity_mgr = IdentityManager(base_dir=data_dir)
         identity = identity_mgr.create_identity(alias, email, password, node_type)
 
         # Register in NATS KV store
@@ -286,7 +312,7 @@ def register(nats_url):
         except Exception as e:
             # Rollback local identity if network registration fails
             import shutil
-            node_dir = Path.home() / ".bee-hive" / alias
+            node_dir = Path(data_dir) / alias
             if node_dir.exists():
                 shutil.rmtree(node_dir)
             click.echo(f"❌ Failed to register on network: {e}", err=True)
@@ -295,7 +321,7 @@ def register(nats_url):
 
         # Start node
         click.echo()
-        node_mgr = NodeManager()
+        node_mgr = NodeManager(base_dir=data_dir)
         node_mgr.start_node(identity, nats_url)
 
         click.echo()
@@ -325,17 +351,20 @@ def register(nats_url):
 @click.option('--aggregators', help='Comma-separated list of heavy node aliases')
 @click.option('--targets', help='Comma-separated list of target node aliases')
 @click.option('--deadline', default=30, help='Deadline in seconds')
-def submit(query, proposer, aggregators, targets, deadline):
+@click.pass_context
+def submit(ctx, query, proposer, aggregators, targets, deadline):
     """Submit a computation to the network."""
 
+    data_dir = ctx.obj['data_dir']
+
     # Verify proposer node exists
-    if not IdentityManager.node_exists(proposer):
+    if not IdentityManager.node_exists(proposer, data_dir):
         click.echo(f"❌ Proposer node '{proposer}' not found on this machine", err=True)
         click.echo(f"   Run 'bee-hive register' first to create the node", err=True)
         sys.exit(1)
 
     # Check if node is running
-    node_mgr = NodeManager()
+    node_mgr = NodeManager(base_dir=data_dir)
     if not node_mgr.is_running(proposer):
         click.echo(f"❌ Node '{proposer}' is not running", err=True)
         click.echo(f"   Run 'bee-hive register' to start the node", err=True)
@@ -369,7 +398,7 @@ def submit(query, proposer, aggregators, targets, deadline):
         if 'heavy_nodes' in result:
             click.echo(f"   Aggregators: {', '.join(result['heavy_nodes'])}")
         click.echo(f"   Deadline: {deadline}s")
-        click.echo(f"\n💡 Results will be saved to: ~/.bee-hive/{proposer}/data/")
+        click.echo(f"\n💡 Results will be saved to: {data_dir}/{proposer}/data/")
 
     except Exception as e:
         click.echo(f"❌ Failed to submit: {e}", err=True)
@@ -378,15 +407,18 @@ def submit(query, proposer, aggregators, targets, deadline):
 
 @cli.command()
 @click.argument('alias')
-def peers(alias):
+@click.pass_context
+def peers(ctx, alias):
     """Show known peers for a node (useful for debugging)."""
 
+    data_dir = ctx.obj['data_dir']
+
     # Check if node exists
-    if not IdentityManager.node_exists(alias):
+    if not IdentityManager.node_exists(alias, data_dir):
         click.echo(f"❌ Node '{alias}' not found", err=True)
         sys.exit(1)
 
-    identity_mgr = IdentityManager(alias=alias)
+    identity_mgr = IdentityManager(alias=alias, base_dir=data_dir)
 
     # Get local identity
     local_identity = identity_mgr.get_local_identity()
@@ -417,10 +449,13 @@ def peers(alias):
 
 
 @cli.command()
-def list():
+@click.pass_context
+def list(ctx):
     """List all registered nodes on this machine."""
 
-    nodes = IdentityManager.list_local_nodes()
+    data_dir = ctx.obj['data_dir']
+
+    nodes = IdentityManager.list_local_nodes(data_dir)
 
     if not nodes:
         click.echo("No nodes registered on this machine")
@@ -431,10 +466,10 @@ def list():
     click.echo("║         Registered Nodes on This Machine         ║")
     click.echo("╚═══════════════════════════════════════════════════╝\n")
 
-    node_mgr = NodeManager()
+    node_mgr = NodeManager(base_dir=data_dir)
 
     # Load handler information
-    handlers_file = Path.home() / ".bee-hive" / "nectar" / "handlers.json"
+    handlers_file = Path(data_dir) / "nectar" / "handlers.json"
     handlers_data = {}
     if handlers_file.exists():
         try:
@@ -455,7 +490,7 @@ def list():
         # Show peer count if running
         if running:
             try:
-                identity_mgr = IdentityManager(alias=alias)
+                identity_mgr = IdentityManager(alias=alias, base_dir=data_dir)
                 peer_count = len(identity_mgr.list_peer_identities())
                 click.echo(f"           Known peers: {peer_count}")
             except:
@@ -484,16 +519,19 @@ def list():
 
 @cli.command()
 @click.argument('alias')
-def logs(alias):
+@click.pass_context
+def logs(ctx, alias):
     """View logs for a running node (tail -f)."""
 
+    data_dir = ctx.obj['data_dir']
+
     # Check if node exists
-    if not IdentityManager.node_exists(alias):
+    if not IdentityManager.node_exists(alias, data_dir):
         click.echo(f"❌ Node '{alias}' not found", err=True)
         sys.exit(1)
 
     # Check if log file exists
-    log_file = Path.home() / ".bee-hive" / alias / "data" / "node.log"
+    log_file = Path(data_dir) / alias / "data" / "node.log"
     if not log_file.exists():
         click.echo(f"❌ Log file not found: {log_file}", err=True)
         click.echo(f"   Node may not have been started yet", err=True)
@@ -514,55 +552,66 @@ def logs(alias):
 
 @cli.command()
 @click.argument('alias')
-def deregister(alias):
+@click.option('--password', help='Password (for non-interactive mode)')
+@click.option('--yes', '-y', is_flag=True, help='Skip confirmation prompt')
+@click.pass_context
+def deregister(ctx, alias, password, yes):
     """Deregister a node from the network and remove all data."""
 
-    click.echo("╔═══════════════════════════════════════════════════╗")
-    click.echo("║         Bee-Hive Network Deregistration           ║")
-    click.echo("╚═══════════════════════════════════════════════════╝\n")
+    data_dir = ctx.obj['data_dir']
+
+    # Interactive mode if password or confirmation not provided
+    interactive_mode = not password or not yes
+
+    if interactive_mode:
+        click.echo("╔═══════════════════════════════════════════════════╗")
+        click.echo("║         Bee-Hive Network Deregistration           ║")
+        click.echo("╚═══════════════════════════════════════════════════╝\n")
 
     # Check if node exists
-    if not IdentityManager.node_exists(alias):
+    if not IdentityManager.node_exists(alias, data_dir):
         click.echo(f"❌ Node '{alias}' not found", err=True)
         sys.exit(1)
 
     # Get password for verification
-    password = getpass.getpass(f"Password for @{alias}: ")
+    if not password:
+        password = getpass.getpass(f"Password for @{alias}: ")
 
     # Verify password BEFORE showing destructive operation warnings
     try:
-        identity_mgr = IdentityManager(alias=alias)
+        identity_mgr = IdentityManager(alias=alias, base_dir=data_dir)
         identity_mgr.verify_identity(password)
     except ValueError as e:
         click.echo(f"\n❌ {e}", err=True)
         sys.exit(1)
 
-    # Check for attached handlers
-    handlers_file = Path.home() / ".bee-hive" / "nectar" / "handlers.json"
-    if handlers_file.exists():
-        try:
-            handlers_data = json.loads(handlers_file.read_text())
-            for h_name, h_data in handlers_data.items():
-                if alias in h_data.get("attached_aliases", []):
-                    click.echo(f"\n⚠️  WARNING: Handler '{h_name}' is attached to this node.")
-                    click.echo(f"   Consider detaching it first with: nectar detach {h_name} {alias}")
-                    click.echo(f"   (Handler will continue running but won't process this node's computations)")
-                    break
-        except:
-            pass
+    # Check for attached handlers (only show warning in interactive mode)
+    if interactive_mode:
+        handlers_file = Path(data_dir) / "nectar" / "handlers.json"
+        if handlers_file.exists():
+            try:
+                handlers_data = json.loads(handlers_file.read_text())
+                for h_name, h_data in handlers_data.items():
+                    if alias in h_data.get("attached_aliases", []):
+                        click.echo(f"\n⚠️  WARNING: Handler '{h_name}' is attached to this node.")
+                        click.echo(f"   Consider detaching it first with: nectar detach {h_name} {alias}")
+                        click.echo(f"   (Handler will continue running but won't process this node's computations)")
+                        break
+            except:
+                pass
 
-    # Show what will be deleted
-    click.echo(f"\n⚠️  WARNING: This will permanently delete:")
-    click.echo(f"   • Identity and cryptographic keys (~/.bee-hive/{alias}/keys/)")
-    click.echo(f"   • Computation data (~/.bee-hive/{alias}/data/)")
-    click.echo(f"   • Stop running node process")
+        # Show what will be deleted
+        click.echo(f"\n⚠️  WARNING: This will permanently delete:")
+        click.echo(f"   • Identity and cryptographic keys ({data_dir}/{alias}/keys/)")
+        click.echo(f"   • Computation data ({data_dir}/{alias}/data/)")
+        click.echo(f"   • Stop running node process")
 
-    if not click.confirm("\nAre you sure you want to continue?", default=False):
+    if not yes and not click.confirm("\nAre you sure you want to continue?", default=False):
         click.echo("Deregistration cancelled")
         return
 
     try:
-        node_mgr = NodeManager()
+        node_mgr = NodeManager(base_dir=data_dir)
 
         # Stop node if running
         if node_mgr.is_running(alias):
@@ -582,7 +631,7 @@ def deregister(alias):
         # Remove entire node directory (includes keys, data, identities.json)
         click.echo(f"🗑️  Removing node directory...")
         import shutil
-        node_dir = Path.home() / ".bee-hive" / alias
+        node_dir = Path(data_dir) / alias
         if node_dir.exists():
             shutil.rmtree(node_dir)
             click.echo(f"✅ Removed {node_dir}")

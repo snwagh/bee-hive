@@ -15,10 +15,6 @@ def example_handler(computation: Computation) -> int:
 
     # Simple logic: return a score from 0-100 based on query length
     # Longer queries get higher scores (capped at 100)
-    score = query_length
-
-    print(f"Processing: '{computation.query}'")
-    print(f"Query length: {query_length}")
-    print(f"Computed score: {score}")
+    score = min(query_length, 100)
 
     return score

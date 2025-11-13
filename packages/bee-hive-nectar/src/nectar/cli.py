@@ -18,9 +18,14 @@ from nectar.ipc import send_command
 
 
 @click.group()
-def main():
+@click.option('--data-dir',
+              default=str(Path.home() / '.bee-hive'),
+              help='Data directory (default: ~/.bee-hive)')
+@click.pass_context
+def main(ctx, data_dir):
     """Nectar - Computation Handler Manager"""
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj['data_dir'] = data_dir
 
 
 @main.command()
@@ -89,14 +94,16 @@ def test(handler_file):
 @main.command()
 @click.argument('handler_file')
 @click.argument('name')
-def launch(handler_file, name):
+@click.pass_context
+def launch(ctx, handler_file, name):
     """
     Launch a handler as a background daemon.
 
     Example:
         nectar launch my_handler.py sentiment_v1
     """
-    manager = HandlerManager()
+    data_dir = ctx.obj['data_dir']
+    manager = HandlerManager(base_dir=data_dir)
 
     # Validate handler file
     handler_path = Path(handler_file).resolve()
@@ -186,14 +193,16 @@ asyncio.run(daemon.run())
 
 @main.command()
 @click.argument('name')
-def stop(name):
+@click.pass_context
+def stop(ctx, name):
     """
     Stop a running handler.
 
     Example:
         nectar stop sentiment_v1
     """
-    manager = HandlerManager()
+    data_dir = ctx.obj['data_dir']
+    manager = HandlerManager(base_dir=data_dir)
     handler = manager.get_handler(name)
 
     if not handler:
@@ -258,9 +267,11 @@ def stop(name):
 
 
 @main.command()
-def view():
+@click.pass_context
+def view(ctx):
     """List all handlers and their status"""
-    manager = HandlerManager()
+    data_dir = ctx.obj['data_dir']
+    manager = HandlerManager(base_dir=data_dir)
     handlers = manager.list_handlers()
 
     if not handlers:
@@ -308,14 +319,16 @@ def view():
 @main.command()
 @click.argument('name')
 @click.argument('alias')
-def attach(name, alias):
+@click.pass_context
+def attach(ctx, name, alias):
     """
     Attach a handler to an alias (node).
 
     Example:
         nectar attach sentiment_v1 alice
     """
-    manager = HandlerManager()
+    data_dir = ctx.obj['data_dir']
+    manager = HandlerManager(base_dir=data_dir)
     handler = manager.get_handler(name)
 
     if not handler:
@@ -329,7 +342,7 @@ def attach(name, alias):
         sys.exit(1)
 
     # Validate alias directory exists
-    alias_dir = Path.home() / ".bee-hive" / alias / "data" / "computation"
+    alias_dir = Path(data_dir) / alias / "data" / "computation"
     if not alias_dir.exists():
         click.echo(f"❌ Alias '{alias}' not found", err=True)
         click.echo(f"   Register it with: bee-hive register", err=True)
@@ -370,14 +383,16 @@ def attach(name, alias):
 @main.command()
 @click.argument('name')
 @click.argument('alias')
-def detach(name, alias):
+@click.pass_context
+def detach(ctx, name, alias):
     """
     Detach a handler from an alias.
 
     Example:
         nectar detach sentiment_v1 alice
     """
-    manager = HandlerManager()
+    data_dir = ctx.obj['data_dir']
+    manager = HandlerManager(base_dir=data_dir)
     handler = manager.get_handler(name)
 
     if not handler:
@@ -414,14 +429,16 @@ def detach(name, alias):
 
 @main.command()
 @click.argument('name')
-def logs(name):
+@click.pass_context
+def logs(ctx, name):
     """
     View handler logs (tail -f).
 
     Example:
         nectar logs sentiment_v1
     """
-    manager = HandlerManager()
+    data_dir = ctx.obj['data_dir']
+    manager = HandlerManager(base_dir=data_dir)
     handler = manager.get_handler(name)
 
     if not handler:

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   bee-hive:
     image: nats:2.10-alpine
@@ -14,8 +12,5 @@ services:
       "-DVV"           # Verbose logging
     ]
     volumes:
-      - bee-hive-data:/data
+      - ./nats-data:/data
     restart: unless-stopped
-
-volumes:
-  bee-hive-data:

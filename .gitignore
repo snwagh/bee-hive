@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# Testing artifacts
+**/*.egg-info/*
+sandbox/
+nats-data/

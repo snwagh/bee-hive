@@ -44,7 +44,9 @@ class BaseNode:
         logger.info(f"[{node_id}] Database initialized at {db_path}")
 
         # Identity manager for this node (manages both local and peer identities)
-        self.identity_mgr = IdentityManager(alias=node_id)
+        # Extract bee-hive base directory from data_dir (data_dir is ./sandbox/alice/data, we need ./sandbox)
+        bee_hive_base = self.data_dir.parent.parent
+        self.identity_mgr = IdentityManager(alias=node_id, base_dir=str(bee_hive_base))
         logger.info(f"[{node_id}] Identity manager initialized")
 
         # NATS connections

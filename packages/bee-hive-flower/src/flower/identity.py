@@ -4,6 +4,7 @@ Identity Management for Bee-Hive Network
 Handles cryptographic identities, key generation, and credential storage.
 """
 import json
+import os
 import hashlib
 from datetime import datetime
 from pathlib import Path
@@ -22,8 +23,11 @@ class IdentityManager:
     - If alias is None: Used for machine-level operations (listing all local nodes)
     """
 
-    def __init__(self, alias: str = None):
-        self.base_dir = Path("~/.bee-hive").expanduser()
+    def __init__(self, alias: str = None, base_dir: str = None):
+        # Default to ~/.bee-hive if not specified
+        if base_dir is None:
+            base_dir = str(Path.home() / ".bee-hive")
+        self.base_dir = Path(base_dir)
         self.base_dir.mkdir(exist_ok=True)
         self.alias = alias
 
@@ -47,9 +51,11 @@ class IdentityManager:
         return '@' in email and '.' in email.split('@')[1]
 
     @staticmethod
-    def node_exists(alias: str) -> bool:
+    def node_exists(alias: str, base_dir: str = None) -> bool:
         """Check if a node exists on this machine (machine-level operation)."""
-        node_dir = Path.home() / ".bee-hive" / alias
+        if base_dir is None:
+            base_dir = str(Path.home() / ".bee-hive")
+        node_dir = Path(base_dir) / alias
         return node_dir.exists() and (node_dir / "identities.json").exists()
 
     def get_local_identity(self) -> Dict:
@@ -94,7 +100,7 @@ class IdentityManager:
             raise ValueError("Node type must be 'heavy' or 'light'")
 
         # Check if already exists
-        if self.node_exists(alias):
+        if self.node_exists(alias, str(self.base_dir)):
             raise ValueError(f"Node '{alias}' already exists")
 
         print(f"[Identity] Generating cryptographic keypair for @{alias}...")
@@ -216,9 +222,11 @@ class IdentityManager:
         return str(private_key_file), str(public_key_file)
 
     @staticmethod
-    def get_key_paths_for_alias(alias: str) -> Tuple[str, str]:
+    def get_key_paths_for_alias(alias: str, base_dir: str = None) -> Tuple[str, str]:
         """Get paths to key files for any alias (machine-level operation)."""
-        identity_dir = Path.home() / ".bee-hive" / alias
+        if base_dir is None:
+            base_dir = str(Path.home() / ".bee-hive")
+        identity_dir = Path(base_dir) / alias
         keys_dir = identity_dir / "keys"
 
         private_key_file = keys_dir / "private_key.pem"
@@ -289,18 +297,20 @@ class IdentityManager:
     # === Machine-Level Operations ===
 
     @staticmethod
-    def list_local_nodes() -> list:
+    def list_local_nodes(base_dir: str = None) -> list:
         """List all nodes registered on this machine (machine-level operation).
 
         Returns list of local identities from all nodes on this machine.
         """
-        base_dir = Path.home() / ".bee-hive"
+        if base_dir is None:
+            base_dir = str(Path.home() / ".bee-hive")
+        base_path = Path(base_dir)
         local_nodes = []
 
-        if not base_dir.exists():
+        if not base_path.exists():
             return local_nodes
 
-        for node_dir in base_dir.iterdir():
+        for node_dir in base_path.iterdir():
             if node_dir.is_dir():
                 identities_file = node_dir / "identities.json"
                 if identities_file.exists():
